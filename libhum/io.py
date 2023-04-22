@@ -20,7 +20,9 @@ import csv
 
 from typing import List, Tuple
 
+import audiofile
 import numpy as np
+import scipy
 
 from sortedcontainers import SortedDict
 
@@ -83,7 +85,14 @@ def read_weti(path: str, frequency: float) -> ENFSignal:
 
     signal = np.fromiter(
         (interpolate_value(begins_at + sampling_rate * i) for i in range(0, n_samples)),
-        dtype=np.half,
+        dtype=np.float16,
     )
 
-    return ENFSignal(50.0, begins_at, frequency, signal)
+    return ENFSignal(50.0, signal, frequency, begins_at=begins_at)
+
+
+def read_audio(path: str) -> Tuple[np.array, float]:
+    """Reads an audio file and returns its single channel buffer with its sampling frequency."""
+
+    data, frequency = audiofile.read(path, always_2d=True)
+    return np.mean(data, axis=0), float(frequency)

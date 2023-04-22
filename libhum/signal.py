@@ -17,7 +17,10 @@
 
 import datetime
 
+from typing import Optional
+
 import attrs
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy
 
@@ -25,17 +28,34 @@ import scipy
 class ENFSignal:
     network_frequency: float = attrs.field() # e.g. 50Hz or 60Hz
 
-    begins_at: datetime.datetime = attrs.field()
     signal_frequency: float = attrs.field() # e.g. 1Hz or 0.1Hz
+
+    # The ENF signal, relative to the network's frequency.
     signal: np.ma.MaskedArray = attrs.field()
+
+    begins_at: Optional[datetime.datetime] = attrs.field(default=None)
+
+    @property
+    def signal_sampling_rate(self) -> datetime.timedelta:
+        return datetime.timedelta(1 / self.signal_frequency)
 
     @property
     def duration(self) -> datetime.timedelta:
-        return datetime.timedelta(seconds=len(self.signal) / self.signal_frequency)
+        return self.signal_sampling_rate * len(self.signal)
 
     @property
-    def ends_at(self):
-        return self.begins_at + self.duration
+    def ends_at(self) -> Optional[datetime.datetime]:
+        if self.begins_at is not None:
+            return self.begins_at + self.duration
+        else:
+            return None
+
+    def plot(self):
+        sampling_rate = self.signal_sampling_rate
+        ts = [self.begins_at + sampling_rate * i for i in range(0, len(self.signal))]
+
+        plt.plot(ts, self.signal)
+        plt.show()
 
     def downsample(self, new_frequency: float) -> "ENFSignal":
         if new_frequency > self.frequency:
@@ -47,4 +67,5 @@ class ENFSignal:
         q = self.frequency // new_frequency
         new_signal = scipy.signal.decimate(self.signal, q)
 
-        return ENFSignal(self.begin_at, new_frequency, new_signal)
+        return attrs.evolve(self, signal_frequency=new_frequency, signal=new_signal)
+
