@@ -1,5 +1,7 @@
 attrs
 matplotlib
 numpy
+pytz
+requests
 sortedcontainers
 scipy

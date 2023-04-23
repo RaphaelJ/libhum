@@ -91,6 +91,8 @@ class ENFAnalysisResult:
 def compute_enf(
     signal: np.array, signal_frequency: float, network_frequency: float = 50.0
 ) -> ENFAnalysisResult:
+    """Detects the ENF signal in the provided audio signal."""
+
     decimated_signal, decimated_frequency = _signal_decimate(signal, signal_frequency)
 
     spectrum = _signal_spectrum(decimated_signal, decimated_frequency, network_frequency)

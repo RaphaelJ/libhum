@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+
 import datetime
 
 from typing import Optional
@@ -24,6 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy
 
+
 @attrs.define
 class ENFSignal:
     network_frequency: float = attrs.field() # e.g. 50Hz or 60Hz
@@ -31,7 +33,7 @@ class ENFSignal:
     signal_frequency: float = attrs.field() # e.g. 1Hz or 0.1Hz
 
     # The ENF signal, relative to the network's frequency.
-    signal: np.ma.MaskedArray = attrs.field()
+    signal: np.ma.masked_array = attrs.field()
 
     begins_at: Optional[datetime.datetime] = attrs.field(default=None)
 
@@ -54,7 +56,8 @@ class ENFSignal:
         sampling_rate = self.signal_sampling_rate
         ts = [(sampling_rate * i).total_seconds() for i in range(0, len(self.signal))]
 
-        plt.plot(ts, self.signal)
+        plt.plot(ts, self.signal.astype(np.float64) + self.network_frequency)
+        plt.ylim(self.network_frequency - 0.1, self.network_frequency + 0.1)
         plt.show()
 
     def downsample(self, new_frequency: float) -> "ENFSignal":

@@ -22,10 +22,24 @@ from typing import List, Tuple
 
 import audiofile
 import numpy as np
+import pytz
+import requests
+import scipy
 
 from sortedcontainers import SortedDict
 
 from libhum.signal import ENFSignal
+
+
+DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/bin/services/apicache?path=/content/swissgrid/fr/home/operation/grid-data/current-data/jcr:content/parsys/chart_copy"
+
+
+def read_audio(path: str) -> Tuple[np.array, float]:
+    """Reads an audio file and returns its single channel buffer with its sampling frequency."""
+
+    data, frequency = audiofile.read(path, always_2d=True)
+    return np.mean(data, axis=0), float(frequency)
+
 
 def read_weti(path: str, frequency: float) -> ENFSignal:
     """
@@ -54,38 +68,9 @@ def read_weti(path: str, frequency: float) -> ENFSignal:
 
     with open(path, "r") as file:
         reader = csv.reader(file, delimiter=";")
-        values = SortedDict(parse_weti_value(value) for value in reader)
+        sparse_signal = SortedDict(parse_weti_value(value) for value in reader)
 
-    # Samples the sparse signal at the requested frequency.
-
-    def interpolate_value(at: datetime.datetime) -> float:
-        """Linear interpolates the signal value based on the 2 closest values."""
-        left_dt, left_val = values.peekitem(values.bisect_left(at))
-        right_dt, right_val = values.peekitem(values.bisect_right(at))
-        return np.interp(
-            0,
-            [(left_dt - at).total_seconds(), (right_dt - at).total_seconds()],
-            [left_val, right_val]
-        )
-
-    def round_datetime(dt: datetime.datetime) -> datetime.datetime:
-        if dt.microsecond < 500_000:
-            return dt.replace(microsecond=0)
-        else:
-            return dt.replace(microsecond=0) + datetime.timedelta(seconds=1)
-
-    begins_at = round_datetime(values.peekitem(0)[0])
-    ends_at = round_datetime(values.peekitem(-1)[0])
-
-    duration = ends_at - begins_at
-
-    sampling_rate = datetime.timedelta(seconds=1.0 / frequency)
-    n_samples = duration // sampling_rate
-
-    signal = np.fromiter(
-        (interpolate_value(begins_at + sampling_rate * i) for i in range(0, n_samples)),
-        dtype=np.float64#np.float16,
-    )
+    signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
 
     return ENFSignal(
         network_frequency=50.0,
@@ -95,8 +80,87 @@ def read_weti(path: str, frequency: float) -> ENFSignal:
     )
 
 
-def read_audio(path: str) -> Tuple[np.array, float]:
-    """Reads an audio file and returns its single channel buffer with its sampling frequency."""
+def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
+    """
+    Fetches the latest 10 minute data from the Swiss Grid operator.
 
-    data, frequency = audiofile.read(path, always_2d=True)
-    return np.mean(data, axis=0), float(frequency)
+    See https://www.swissgrid.ch/en/home/operation/grid-data/current-data.html
+    """
+
+    swiss_tz = pytz.timezone("Europe/Zurich")
+    network_frequency = 50.0
+
+    resp = requests.get(url)
+    resp.raise_for_status()
+
+    values = resp.json()["data"]["series"][0]["data"]
+
+    def parse_swiss_grid_value(timestamp: int, enf: float):
+        local_dt = swiss_tz.localize(datetime.datetime.utcfromtimestamp(timestamp / 1000))
+        utc_dt = local_dt.astimezone(pytz.utc)
+        return utc_dt, enf - network_frequency
+
+    sparse_signal = SortedDict(parse_swiss_grid_value(*v) for v in values)
+
+    signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
+
+    return ENFSignal(
+        network_frequency=network_frequency,
+        signal=signal,
+        signal_frequency=frequency,
+        begins_at=begins_at
+    )
+
+
+def _resample_sparse_signal(
+    sparse_signal: SortedDict[datetime.datetime, float], frequency
+) -> Tuple[np.ma.masked_array, datetime.datetime]:
+    """
+    Samples the sparse signal at the requested frequency.
+
+    Returns the resampled signal, and the begin time.
+    """
+
+    INTERP_RANGE = 2 # Interpolates the values up to 2x the output sampling rate
+
+    sampling_rate = datetime.timedelta(seconds=1.0 / frequency)
+
+    interp_range_td = INTERP_RANGE * sampling_rate
+
+    def interp_value(at: datetime.datetime) -> float:
+        """Linear interpolates the signal value based on the 2 closest values."""
+
+        # Collects all samples within INTERP_RANGE.
+        xs = list(sparse_signal.irange(at - interp_range_td, at + interp_range_td))
+
+        if len(xs) == 0:
+            return np.nan
+        else:
+            kind = "cubic" if len(xs) >= 4 else "linear"
+
+            return scipy.interpolate.interp1d(
+                [(x - at).total_seconds() for x in xs],
+                [sparse_signal[x] for x in xs],
+                kind=kind,
+                bounds_error=False,
+            )(0.0)
+
+    def round_datetime(dt: datetime.datetime) -> datetime.datetime:
+        if dt.microsecond < 500_000:
+            return dt.replace(microsecond=0)
+        else:
+            return dt.replace(microsecond=0) + datetime.timedelta(seconds=1)
+
+    begins_at = round_datetime(sparse_signal.peekitem(0)[0])
+    ends_at = round_datetime(sparse_signal.peekitem(-1)[0])
+
+    duration = ends_at - begins_at
+
+    n_samples = duration // sampling_rate
+
+    signal = np.ma.masked_invalid(np.fromiter(
+        (interp_value(begins_at + sampling_rate * i) for i in range(0, n_samples)),
+        dtype=np.float16,
+    ))
+
+    return signal, begins_at
