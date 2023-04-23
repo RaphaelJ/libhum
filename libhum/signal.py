@@ -52,7 +52,7 @@ class ENFSignal:
 
     def plot(self):
         sampling_rate = self.signal_sampling_rate
-        ts = [self.begins_at + sampling_rate * i for i in range(0, len(self.signal))]
+        ts = [(sampling_rate * i).total_seconds() for i in range(0, len(self.signal))]
 
         plt.plot(ts, self.signal)
         plt.show()

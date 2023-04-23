@@ -22,7 +22,6 @@ from typing import List, Tuple
 
 import audiofile
 import numpy as np
-import scipy
 
 from sortedcontainers import SortedDict
 
@@ -85,10 +84,15 @@ def read_weti(path: str, frequency: float) -> ENFSignal:
 
     signal = np.fromiter(
         (interpolate_value(begins_at + sampling_rate * i) for i in range(0, n_samples)),
-        dtype=np.float16,
+        dtype=np.float64#np.float16,
     )
 
-    return ENFSignal(50.0, signal, frequency, begins_at=begins_at)
+    return ENFSignal(
+        network_frequency=50.0,
+        signal=signal,
+        signal_frequency=frequency,
+        begins_at=begins_at
+    )
 
 
 def read_audio(path: str) -> Tuple[np.array, float]:

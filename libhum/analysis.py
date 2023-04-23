@@ -24,6 +24,7 @@ Provides DSP algorithms to extract ENF signal from sound recordings.
 """
 
 import datetime
+import enum
 from typing import Tuple
 
 import attrs
@@ -38,15 +39,21 @@ MIN_DECIMATED_FREQUENCY = 1000.0
 
 TARGET_FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 
-SPECTRUM_BAND_SIZE = 0.15 # e.g. 49.85 to 50.15 for 50Hz ENF.
-
+SPECTRUM_BAND_SIZE = 0.2 # e.g. 49.8 to 50.2 for 50Hz ENF.
 STFT_WINDOW_SIZE = datetime.timedelta(seconds=16)
-STFT_OUTPUT_FREQUENCY = 1.0
 
-ENF_MEDIAN_FILTER_SIZE = 3 # samples
+ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
 
-ENF_LOWER_MIN_SNR = 1.6
-ENF_HIGHER_MIN_SNR = 2.0
+# Post-filters the detected ENF with a Gaussian filter.
+ENF_GAUSSIAN_SIGMA = 2
+
+# Post-filters the detected ENF by selecting good sections with an high S/N and a minimum duration,
+# and by expanding these to neighboring lower S/N sections if the signal's gradient is within the
+# expected range.
+ENF_HIGH_SNR_THRES = 3.0
+ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=5)
+ENF_LOW_SNR_THRES = 1.5
+ENF_MAX_GRADIENT = 0.005
 
 
 @attrs.define
@@ -59,15 +66,24 @@ class ENFAnalysisResult:
     snr: np.ndarray = attrs.field()
 
     def plot(self):
-        _, ax = plt.subplots(1, 1, figsize=(15, 5))
+        _, ax = plt.subplots(1, 1, figsize=(18, 4))
 
         f, t, Zxx = self.spectrum
 
         ax.pcolormesh(t, f / TARGET_FREQUENCY_HARMONIC, Zxx, shading='gouraud')
-        ax.plot(t, self.enf.signal.astype(np.float64) + self.enf.network_frequency, color="red")
+        ax.plot(
+            t,
+            self.enf.signal.astype(np.float64) + self.enf.network_frequency,
+            color="blue",
+            label="Detected ENF"
+        )
 
         ax_snr = ax.twinx()
-        ax_snr.plot(t, self.snr, color="orange", alpha=0.25)
+        ax_snr.plot(t, self.snr, color="grey", alpha=0.25, label="S/N")
+
+        h, l = ax.get_legend_handles_labels()
+        h_snr, l_snr = ax_snr.get_legend_handles_labels()
+        ax.legend(h + h_snr, l + l_snr, loc=2)
 
         plt.show()
 
@@ -161,8 +177,8 @@ def _stft(signal: np.ndarray, frequency: float) -> Tuple[np.ndarray, np.ndarray,
     """Performs a Short-time Fourier Transform (STFT) on the input signal."""
 
     window_size_seconds = STFT_WINDOW_SIZE.total_seconds()
-    nperseg = int(frequency * window_size_seconds / STFT_OUTPUT_FREQUENCY)
-    noverlap = int(frequency * (window_size_seconds - 1) / STFT_OUTPUT_FREQUENCY)
+    nperseg = int(frequency * window_size_seconds / ENF_OUTPUT_FREQUENCY)
+    noverlap = int(frequency * (window_size_seconds - 1) / ENF_OUTPUT_FREQUENCY)
 
     return scipy.signal.stft(signal, frequency, nperseg=nperseg, noverlap=noverlap)
 
@@ -206,7 +222,108 @@ def _quadratic_interpolation(spectrum, max_amp_idx, bin_size):
     return interpolated
 
 
-def _post_process_enf(enf: np.ndarray, snrs: np.ndarray) -> np.ndarray:
+def _post_process_enf(enf: np.ndarray, snrs: np.ndarray) -> np.ma.masked_array:
+
+    smoothed = _gaussian_filter_enf(enf)
+
+    # Clips any value out of the network's frequency band
+    clipped = np.ma.masked_where(
+        (smoothed < -SPECTRUM_BAND_SIZE) | (smoothed > SPECTRUM_BAND_SIZE),
+        smoothed
+    )
+
+    thresholded = _threshold_enf(clipped, snrs)
+
+    return thresholded
 
 
-    return enf
+def _gaussian_filter_enf(enf: np.ma.masked_array) -> np.ma.masked_array:
+    return scipy.ndimage.gaussian_filter1d(
+        enf.astype(np.float64), sigma=ENF_GAUSSIAN_SIGMA
+    ).astype(np.float16)
+
+
+def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_array:
+    """
+    Finds "good" ENF sections that:
+
+    - have at least ENF_HIGH_SNR_MIN_DURATION of continuous ENF signal with a S/N higher than
+      ENF_HIGH_SNR_THRES;
+
+    - do not have any clipped sample;
+
+    - do not have any sample with a S/N lower than ENF_LOW_SNR_THRES;
+
+    - do not have any sample derivative higher than ENF_MAX_DERIV_THRES
+    """
+
+    min_section_duration = ENF_OUTPUT_FREQUENCY * ENF_HIGH_SNR_MIN_DURATION.total_seconds()
+
+    def clipped(i: int) -> bool:
+        return np.ma.is_masked(enf) and enf.mask[i]
+
+    def above_low_threshold(i: int) -> bool:
+        return snrs[i] >= ENF_LOW_SNR_THRES
+
+    def above_high_threshold(i: int) -> bool:
+        return snrs[i] >= ENF_HIGH_SNR_THRES
+
+    def above_min_section_duration(section_duration: int) -> bool:
+        return section_duration >= min_section_duration
+
+    gradient = np.abs(np.gradient(enf))
+
+    def below_max_gradient(i: int) -> bool:
+        return gradient[i] <= (ENF_MAX_GRADIENT / ENF_OUTPUT_FREQUENCY)
+
+    class FilterState(enum.Enum):
+        # Initial state, the filter is looking for a sample with S/N above ENF_HIGH_SNR_THRES.
+        SEARCHING = 1
+
+        # S/N is above ENF_HIGH_SNR_THRES, but the section isn't ENF_HIGH_SNR_MIN_DURATION long yet.
+        ABOVE_HIGH_THRESHOLD = 2
+
+        # The current signal is a valid ENF signal. We collect samples until we get lower than
+        # ENF_LOW_SNR_THRES.
+        IN_VALID_SECTION = 3
+
+    state = FilterState.SEARCHING
+    section_duration = None
+
+    thres_mask = np.ma.masked_all(len(enf)).mask
+
+    i = 0
+    while i < len(enf):
+        if state == FilterState.SEARCHING:
+            if not clipped(i) and above_high_threshold(i) and below_max_gradient(i):
+                section_duration = 1
+                state = FilterState.ABOVE_HIGH_THRESHOLD
+        elif state == FilterState.ABOVE_HIGH_THRESHOLD:
+            if not clipped(i) and above_high_threshold(i) and below_max_gradient(i):
+                section_duration += 1
+
+                if above_min_section_duration(section_duration):
+                    state = FilterState.IN_VALID_SECTION
+
+                    # Extends the section left-wise to any previously ignored low threshold section.
+                    j = i
+                    while (
+                        j >= 0 and
+                        not clipped(j) and
+                        thres_mask[j] and
+                        above_low_threshold(j) and
+                        below_max_gradient(j)
+                    ):
+                        thres_mask[j] = False
+                        j -= 1
+            else:
+                state = FilterState.SEARCHING
+        elif state == FilterState.IN_VALID_SECTION:
+            if not clipped(i) and above_low_threshold(i) and below_max_gradient(i):
+                thres_mask[i] = False
+            else:
+                state = FilterState.SEARCHING
+
+        i += 1
+
+    return np.ma.array(enf, mask=enf.mask | thres_mask)
