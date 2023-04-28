@@ -39,7 +39,7 @@ class ENFSignal:
 
     @property
     def signal_sampling_rate(self) -> datetime.timedelta:
-        return datetime.timedelta(1 / self.signal_frequency)
+        return datetime.timedelta(seconds=1.0 / self.signal_frequency)
 
     @property
     def duration(self) -> datetime.timedelta:

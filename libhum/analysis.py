@@ -42,7 +42,7 @@ TARGET_FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 SPECTRUM_BAND_SIZE = 0.2 # e.g. 49.8 to 50.2 for 50Hz ENF.
 STFT_WINDOW_SIZE = datetime.timedelta(seconds=20)
 
-# Post-filters the spectrum with normalization filter over the specified window.
+# Post-filters the spectrum with a running normalization filter of the specified window size.
 NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=60)
 
 ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
