@@ -40,7 +40,10 @@ MIN_DECIMATED_FREQUENCY = 1000.0
 TARGET_FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 
 SPECTRUM_BAND_SIZE = 0.2 # e.g. 49.8 to 50.2 for 50Hz ENF.
-STFT_WINDOW_SIZE = datetime.timedelta(seconds=16)
+STFT_WINDOW_SIZE = datetime.timedelta(seconds=20)
+
+# Post-filters the spectrum with normalization filter over the specified window.
+NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=60)
 
 ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
 
@@ -52,8 +55,8 @@ ENF_GAUSSIAN_SIGMA = 2
 # expected range.
 ENF_HIGH_SNR_THRES = 3.0
 ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=5)
-ENF_LOW_SNR_THRES = 1.5
-ENF_MAX_GRADIENT = 0.005
+ENF_LOW_SNR_THRES = 2.0
+ENF_MAX_GRADIENT = 0.0075
 
 
 @attrs.define
@@ -146,16 +149,7 @@ def _signal_spectrum(
 
     band_f_idx = (f >= locut) & (f <= hicut)
 
-    return f[band_f_idx], t, _spectrum_normalize(Zxx[band_f_idx])
-
-
-def _spectrum_normalize(spectrum: np.ndarray) -> np.ndarray:
-    """Normalizes to the mean and stddev."""
-
-    # Normalizes to the mean over the whole signal
-    spectrum = (spectrum - np.mean(spectrum)) / np.std(spectrum)
-
-    return np.abs(spectrum)
+    return f[band_f_idx], t, _spectrum_normalize(Zxx[band_f_idx], ENF_OUTPUT_FREQUENCY)
 
 
 def _bandpass_filter(
@@ -185,6 +179,26 @@ def _stft(signal: np.ndarray, frequency: float) -> Tuple[np.ndarray, np.ndarray,
     return scipy.signal.stft(signal, frequency, nperseg=nperseg, noverlap=noverlap)
 
 
+def _spectrum_normalize(spectrum: np.ndarray, frequency: float) -> np.ndarray:
+    """Normalizes to the mean and stddev over NORMALIZE_WINDOW_SIZE."""
+
+    window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * frequency)
+
+    spectrum = spectrum.transpose()
+
+    for i, window_begin in enumerate(range(0, len(spectrum), window_size)):
+        window_end = window_begin + window_size
+
+        window = spectrum[window_begin:window_end]
+
+        mean = np.mean(window)
+        std = np.std(window)
+
+        spectrum[window_begin:window_end] = (window - mean) / std
+
+    return np.abs(spectrum).transpose()
+
+
 def _detect_enf(
     f: np.ndarray, t: np.ndarray, spectrum: np.ndarray, network_frequency: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -195,7 +209,7 @@ def _detect_enf(
     enf = np.empty(len(t), dtype=np.float16)
     snrs = np.empty(len(t), dtype=np.float32)
 
-    for i, sub_spectrum in enumerate(np.transpose(spectrum)):
+    for i, sub_spectrum in enumerate(spectrum.transpose()):
         max_amp = np.amax(sub_spectrum)
 
         max_amp_idx = np.where(sub_spectrum == max_amp)[0][0]

@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+
 import datetime
 import csv
 
@@ -128,7 +129,7 @@ def _resample_sparse_signal(
     interp_range_td = INTERP_RANGE * sampling_rate
 
     def interp_value(at: datetime.datetime) -> float:
-        """Linear interpolates the signal value based on the 2 closest values."""
+        """Linear interpolates the signal value based on the closest values."""
 
         # Collects all samples within INTERP_RANGE.
         xs = list(sparse_signal.irange(at - interp_range_td, at + interp_range_td))

@@ -32,6 +32,7 @@ def main():
     compute_enf = subparsers.add_parser("compute_enf")
     compute_enf.set_defaults(handler=_compute_enf_handler)
     compute_enf.add_argument("wav_file", type=str)
+    compute_enf.add_argument("--network-frequency", "-f", type=float, default=50.0)
 
     args = parser.parse_args()
 
@@ -39,7 +40,7 @@ def main():
 
 
 def _compute_enf_handler(args: argparse.Namespace):
-    compute_enf(*read_audio(args.wav_file)).plot()
+    compute_enf(*read_audio(args.wav_file), network_frequency=args.network_frequency).plot()
 
 
 if __name__ == "__main__":
