@@ -106,7 +106,7 @@ def compute_enf(
     enf_signal = ENFSignal(
         network_frequency=network_frequency,
         signal=enf,
-        signal_frequency=signal_frequency
+        signal_frequency=ENF_OUTPUT_FREQUENCY,
     )
 
     return ENFAnalysisResult(
