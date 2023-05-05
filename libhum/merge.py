@@ -75,7 +75,7 @@ def merge_signals(
     # Adds the non-conflicting values of the second signal.
 
     second_offset = round((second.begins_at - begins_at).total_seconds() * frequency)
-    second_in_merged = merged[second_offset:len(second.signal) + 1]
+    second_in_merged = merged[second_offset:second_offset + len(second.signal)]
 
     # True if no conflict
     non_conflict_mask = second_in_merged.mask & np.invert(second.signal.mask)
