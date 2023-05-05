@@ -70,7 +70,7 @@ def merge_signals(
 
     # Adds the first signal.
     first_offset = round((first.begins_at - begins_at).total_seconds() * frequency)
-    merged[first_offset:len(first.signal)] = first.signal
+    merged[first_offset:first_offset + len(first.signal)] = first.signal
 
     # Adds the non-conflicting values of the second signal.
 

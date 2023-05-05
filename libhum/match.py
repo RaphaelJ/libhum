@@ -142,6 +142,17 @@ def _compute_corr_coeffs_opencl(
         _opencl_queue = cl.CommandQueue(_opencl_ctx)
         _opencl_program = cl.Program(_opencl_ctx, open("libhum/opencl/match.cl").read()).build()
 
+    opencl_compiler_flags = []
+
+    # Detects the optimal buffer item size
+
+    supports_float16 = all("cl_khr_fp16" in d.extensions.split(" ") for d in _opencl_ctx.devices)
+    if supports_float16:
+        buffer_dtype = np.float16
+        opencl_compiler_flags.append("USE_FLOAT16_BUFFERS")
+    else:
+        buffer_dtype = np.float32
+
     # Prepares Numpy buffers
 
     a_float16 = a.astype(np.float16).data
