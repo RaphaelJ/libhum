@@ -1,6 +1,8 @@
 attrs
+audiofile
 matplotlib
 numpy
+pyopencl
 pytz
 requests
 sortedcontainers
