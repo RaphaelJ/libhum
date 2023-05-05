@@ -48,6 +48,7 @@ def main():
     match_enf.add_argument("--network-frequency", "-f", type=float, default=50.0)
     match_enf.add_argument("--max-matches", type=int, default=1)
     match_enf.add_argument("--opencl", action="store_true", default=False)
+    match_enf.add_argument("--plot", action="store_true", default=False)
 
     args = parser.parse_args()
 
@@ -75,6 +76,10 @@ def _match_enf_handler(args: argparse.Namespace):
             f"Offset: {match.offset}\t" +
             f"Duration: {match.duration}"
         )
+
+        if args.plot:
+            match.plot(enf_a, enf_b)
+
 
 if __name__ == "__main__":
     main()

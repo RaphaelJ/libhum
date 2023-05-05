@@ -190,7 +190,7 @@ def _compute_corr_coeffs_opencl(
     global _opencl_ctx, _opencl_queue, _opencl_program
 
     if _opencl_ctx is None:
-        _opencl_ctx = cl.create_some_context(answers=[0])
+        _opencl_ctx = cl.create_some_context()
         _opencl_queue = cl.CommandQueue(_opencl_ctx)
         _opencl_program = cl.Program(_opencl_ctx, open("libhum/opencl/match.cl").read()).build()
 
