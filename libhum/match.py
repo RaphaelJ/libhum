@@ -51,6 +51,9 @@ def match_signals(
     if ref.signal_frequency != target.signal_frequency:
         raise ValueError("signal frequencies should be identical.")
 
+    if ref.network_frequency != target.network_frequency:
+        raise ValueError("network frequencies should be identical.")
+
     frequency = ref.signal_frequency
 
     ref_len = len(ref.signal)
