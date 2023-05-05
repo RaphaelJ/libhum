@@ -18,10 +18,12 @@
 
 import datetime
 import math
+import pickle
 
 from typing import Optional, Tuple
 
 import attrs
+import lz4.frame
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
@@ -75,6 +77,35 @@ class Signal:
 
         return attrs.evolve(self, signal_frequency=new_frequency, signal=new_signal)
 
+    def serialize(self) -> bytes:
+        # Pickles a regular Python directory so that it stays somewhat backward compatible.
+        pickled = pickle.dumps({
+            "network_frequency": self.network_frequency,
+            "signal_frequency": self.signal_frequency,
+            "signal": self.signal.astype(np.float16).tobytes(fill_value=np.nan),
+            "begins_at": self.begins_at.isoformat() if self.begins_at is not None else None,
+        })
+
+        return lz4.frame.compress(pickled)
+
+    @staticmethod
+    def deserialize(data: bytes) -> "Signal":
+        decompressed = lz4.frame.decompress(data)
+        unpickled = pickle.loads(decompressed)
+
+        signal = np.ma.masked_invalid(np.frombuffer(unpickled["signal"], dtype=np.float16))
+
+        if unpickled["begins_at"] is not None:
+            begins_at = datetime.datetime.fromisoformat(unpickled["begins_at"])
+        else:
+            begins_at = None
+
+        return Signal(
+            network_frequency=unpickled["network_frequency"],
+            signal_frequency=unpickled["signal_frequency"],
+            signal=signal,
+            begins_at=begins_at
+        )
 
 @attrs.define
 class Match:

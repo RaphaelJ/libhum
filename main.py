@@ -35,8 +35,10 @@ def main():
         description="computes the ENF signal of a single audio file."
     )
     compute_enf.set_defaults(handler=_compute_enf_handler)
-    compute_enf.add_argument("wav_file", type=str)
+    compute_enf.add_argument("audio_file", type=str)
+    compute_enf.add_argument("output_file", type=str, nargs='?')
     compute_enf.add_argument("--network-frequency", "-f", type=float, default=50.0)
+    compute_enf.add_argument("--plot", action="store_true", default=False)
 
     match_enf = subparsers.add_parser(
         "match_enf",
@@ -56,7 +58,14 @@ def main():
 
 
 def _compute_enf_handler(args: argparse.Namespace):
-    compute_enf(*read_audio(args.wav_file), network_frequency=args.network_frequency).plot()
+    result = compute_enf(*read_audio(args.audio_file), network_frequency=args.network_frequency)
+
+    if args.output_file:
+        with open(args.output_file, "wb") as f:
+            f.write(result.enf.serialize())
+
+    if args.plot:
+        result.plot()
 
 
 def _match_enf_handler(args: argparse.Namespace):

@@ -1,5 +1,6 @@
 attrs
 audiofile
+lz4
 matplotlib
 numpy
 pyopencl
