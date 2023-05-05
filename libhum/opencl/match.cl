@@ -1,30 +1,33 @@
 //  Copyright (C) 2023 Raphael Javaux
 //  raphaeljavaux@gmail.com
-
+//
 //  This program is free software; you can redistribute it and/or
 //  modify it under the terms of the GNU Lesser General Public
 //  License as published by the Free Software Foundation; either
 //  version 3 of the License, or (at your option) any later version.
-
+//
 //  This program is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 //  Lesser General Public License for more details.
-
+//
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with this program; if not, write to the Free Software Foundation,
 //  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-
-#pragma OPENCL EXTENSION cl_khr_fp16 : enable
-
+#ifdef USE_FLOAT16_BUFFERS
+    #pragma OPENCL EXTENSION cl_khr_fp16 : enable
+    typedef half native_float;
+#else
+    typedef float native_float;
+#endif
 
 __kernel void corr_coeffs(
     __global const int *offsets,
-    __global const half *ref,
+    __global const native_float *ref,
     __global const char *ref_mask,
     const int ref_size,
-    __global const half *target,
+    __global const native_float *target,
     __global const char *target_mask,
     const int target_size,
     __global float *coeffs,
@@ -33,9 +36,9 @@ __kernel void corr_coeffs(
 
 
 void _corr_coeff(
-    __global const half *a,
+    __global const native_float *a,
     __global const char *mask_a,
-    __global const half *b,
+    __global const native_float *b,
     __global const char *mask_b,
     int size,
     __global float *coeff,
@@ -45,10 +48,10 @@ void _corr_coeff(
 
 __kernel void corr_coeffs(
     __global const int *offsets,
-    __global const half *ref,
+    __global const native_float *ref,
     __global const char *ref_mask,
     const int ref_size,
-    __global const half *target,
+    __global const native_float *target,
     __global const char *target_mask,
     const int target_size,
     __global float *coeffs,
@@ -64,9 +67,9 @@ __kernel void corr_coeffs(
 
     int size = min(ref_size - ref_offset, target_size - target_offset);
 
-    const __global half *ref_begin = ref + ref_offset;
+    const __global native_float *ref_begin = ref + ref_offset;
     const __global char *ref_mask_begin = ref_mask + ref_offset;
-    const __global half *target_begin = target + target_offset;
+    const __global native_float *target_begin = target + target_offset;
     const __global char *target_mask_begin = target_mask + target_offset;
 
     _corr_coeff(
@@ -76,9 +79,9 @@ __kernel void corr_coeffs(
 
 
 void _corr_coeff(
-    __global const half *a,
+    __global const native_float *a,
     __global const char *mask_a,
-    __global const half *b,
+    __global const native_float *b,
     __global const char *mask_b,
     int size,
     __global float *coeff,

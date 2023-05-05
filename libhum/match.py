@@ -70,7 +70,7 @@ def match_signals(
     # Computes the coefficients using the selected backend for all offsets.
 
     if backend == MatchBackend.OPENCL:
-        corr_coeffs, match_lens = _compute_corr_coeffs_opencl(offsets, ref.signal, target.signal)
+        corr_coeffs, match_lens = _opencl_compute_corr_coeffs(offsets, ref.signal, target.signal)
     else:
         corr_coeffs, match_lens = _compute_corr_coeffs_numpy(offsets, ref.signal, target.signal)
 
@@ -128,38 +128,21 @@ def _corr_coeff(a: np.ma.masked_array, b: np.ma.masked_array) -> Tuple[float, in
 _opencl_ctx = None
 _opencl_queue = None
 _opencl_program = None
+_opencl_buffer_dtype = None
+_opencl_compiler_flags = set()
 
-
-def _compute_corr_coeffs_opencl(
+def _opencl_compute_corr_coeffs(
     offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
-    # Initializes OpenCL
-
-    global _opencl_ctx, _opencl_queue, _opencl_program
-
-    if _opencl_ctx is None:
-        _opencl_ctx = cl.create_some_context()
-        _opencl_queue = cl.CommandQueue(_opencl_ctx)
-        _opencl_program = cl.Program(_opencl_ctx, open("libhum/opencl/match.cl").read()).build()
-
-    opencl_compiler_flags = []
-
-    # Detects the optimal buffer item size
-
-    supports_float16 = all("cl_khr_fp16" in d.extensions.split(" ") for d in _opencl_ctx.devices)
-    if supports_float16:
-        buffer_dtype = np.float16
-        opencl_compiler_flags.append("USE_FLOAT16_BUFFERS")
-    else:
-        buffer_dtype = np.float32
+    _opencl_initialize()
 
     # Prepares Numpy buffers
 
-    a_float16 = a.astype(np.float16).data
-    b_float16 = b.astype(np.float16).data
+    a_float = a.astype(_opencl_buffer_dtype).data
+    b_float = b.astype(_opencl_buffer_dtype).data
 
-    a_float16[np.isnan(a_float16)] = 0.0
-    b_float16[np.isnan(b_float16)] = 0.0
+    a_float[np.isnan(a_float)] = 0.0
+    b_float[np.isnan(b_float)] = 0.0
 
     mask_a_int8 = np.logical_not(a.mask).astype(np.int8)
     mask_b_int8 = np.logical_not(b.mask).astype(np.int8)
@@ -172,8 +155,8 @@ def _compute_corr_coeffs_opencl(
     mf = cl.mem_flags
 
     offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=offsets)
-    a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=a_float16)
-    b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=b_float16)
+    a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=a_float)
+    b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=b_float)
     mask_a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=mask_a_int8)
     mask_b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=mask_b_int8)
 
@@ -194,6 +177,35 @@ def _compute_corr_coeffs_opencl(
     cl.enqueue_copy(_opencl_queue, match_lens, match_lens_gpu)
 
     return corr_coeffs, match_lens
+
+
+def _opencl_initialize():
+    global _opencl_ctx, _opencl_queue, _opencl_program, _opencl_buffer_dtype
+
+    if _opencl_ctx is None:
+        _opencl_ctx = cl.create_some_context()
+        _opencl_queue = cl.CommandQueue(_opencl_ctx)
+
+        # Detects the optimal buffer item size
+
+        supports_float16 = all(
+            "cl_khr_fp16" in d.extensions.split(" ")
+            for d in _opencl_ctx.devices
+        )
+
+        if supports_float16:
+            _opencl_buffer_dtype = np.float16
+            _opencl_compiler_flags.add("-DUSE_FLOAT16_BUFFERS")
+        else:
+            _opencl_buffer_dtype = np.float32
+
+        # Builds the kernel
+
+        with open("libhum/opencl/match.cl") as f:
+            kernel_source = f.read()
+        _opencl_program = cl.Program(
+            _opencl_ctx, kernel_source
+        ).build(options=list(_opencl_compiler_flags))
 
 
 def _build_matches(
