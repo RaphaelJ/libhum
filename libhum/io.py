@@ -29,7 +29,7 @@ import scipy
 
 from sortedcontainers import SortedDict
 
-from libhum.signal import ENFSignal
+from libhum.types import Signal
 
 
 DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/bin/services/apicache?path=/content/swissgrid/fr/home/operation/grid-data/current-data/jcr:content/parsys/chart_copy"
@@ -42,7 +42,7 @@ def read_audio(path: str) -> Tuple[np.array, float]:
     return np.mean(data, axis=0), float(frequency)
 
 
-def read_weti(path: str, frequency: float) -> ENFSignal:
+def read_weti(path: str, frequency: float) -> Signal:
     """
     Reads a reference ENF signal from a CSV file produced by the Wind Energy Technology Instiute.
 
@@ -73,7 +73,7 @@ def read_weti(path: str, frequency: float) -> ENFSignal:
 
     signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
 
-    return ENFSignal(
+    return Signal(
         network_frequency=50.0,
         signal=signal,
         signal_frequency=frequency,
@@ -105,7 +105,7 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
 
     signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
 
-    return ENFSignal(
+    return Signal(
         network_frequency=network_frequency,
         signal=signal,
         signal_frequency=frequency,

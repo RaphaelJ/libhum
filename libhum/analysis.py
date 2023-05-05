@@ -27,17 +27,16 @@ import datetime
 import enum
 from typing import Tuple
 
-import attrs
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy
 
-from libhum.signal import ENFSignal
+from libhum.types import Signal, AnalysisResult
+
 
 # Tries to decimate the original signal so that it is at least that frequency.
 MIN_DECIMATED_FREQUENCY = 1000.0
 
-TARGET_FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
+FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 
 SPECTRUM_BAND_SIZE = 0.2 # e.g. 49.8 to 50.2 for 50Hz ENF.
 STFT_WINDOW_SIZE = datetime.timedelta(seconds=20)
@@ -59,41 +58,9 @@ ENF_LOW_SNR_THRES = 2.0
 ENF_MAX_GRADIENT = 0.0075
 
 
-@attrs.define
-class ENFAnalysisResult:
-    enf: ENFSignal = attrs.field()
-
-    # The filtered spectrum for the signal's band, with its frequency and timestamps.
-    spectrum: Tuple[np.ndarray, np.ndarray, np.ndarray] = attrs.field()
-
-    snr: np.ndarray = attrs.field()
-
-    def plot(self):
-        _, ax = plt.subplots(1, 1, figsize=(18, 4))
-
-        f, t, Zxx = self.spectrum
-
-        ax.pcolormesh(t, f / TARGET_FREQUENCY_HARMONIC, Zxx, shading='gouraud')
-        ax.plot(
-            t,
-            self.enf.signal.astype(np.float64) + self.enf.network_frequency,
-            color="blue",
-            label="Detected ENF"
-        )
-
-        ax_snr = ax.twinx()
-        ax_snr.plot(t, self.snr, color="grey", alpha=0.25, label="S/N")
-
-        h, l = ax.get_legend_handles_labels()
-        h_snr, l_snr = ax_snr.get_legend_handles_labels()
-        ax.legend(h + h_snr, l + l_snr, loc=2)
-
-        plt.show()
-
-
 def compute_enf(
     signal: np.array, signal_frequency: float, network_frequency: float = 50.0
-) -> ENFAnalysisResult:
+) -> AnalysisResult:
     """Detects the ENF signal in the provided audio signal."""
 
     decimated_signal, decimated_frequency = _signal_decimate(signal, signal_frequency)
@@ -103,16 +70,17 @@ def compute_enf(
     f, t, Zxx = spectrum
     enf, snr = _detect_enf(f, t, Zxx, network_frequency)
 
-    enf_signal = ENFSignal(
+    enf_signal = Signal(
         network_frequency=network_frequency,
         signal=enf,
         signal_frequency=ENF_OUTPUT_FREQUENCY,
     )
 
-    return ENFAnalysisResult(
-        enf_signal,
-        spectrum,
-        snr,
+    return AnalysisResult(
+        enf=enf_signal,
+        spectrum=spectrum,
+        snr=snr,
+        frequency_harmonic=FREQUENCY_HARMONIC,
     )
 
 
@@ -140,8 +108,8 @@ def _signal_spectrum(
     Returns the frequencies, timestamp, and the target frequency band's spectrum.
     """
 
-    locut = TARGET_FREQUENCY_HARMONIC * (network_frequency - SPECTRUM_BAND_SIZE)
-    hicut = TARGET_FREQUENCY_HARMONIC * (network_frequency + SPECTRUM_BAND_SIZE)
+    locut = FREQUENCY_HARMONIC * (network_frequency - SPECTRUM_BAND_SIZE)
+    hicut = FREQUENCY_HARMONIC * (network_frequency + SPECTRUM_BAND_SIZE)
 
     filtered_data = _bandpass_filter(signal, signal_frequency, locut, hicut, order=10)
 
@@ -215,7 +183,7 @@ def _detect_enf(
         max_amp_idx = np.where(sub_spectrum == max_amp)[0][0]
         max_amp_freq = f[0] + _quadratic_interpolation(sub_spectrum, max_amp_idx, bin_size)
 
-        enf[i] = max_amp_freq / TARGET_FREQUENCY_HARMONIC - network_frequency
+        enf[i] = max_amp_freq / FREQUENCY_HARMONIC - network_frequency
         snrs[i] = max_amp / np.mean(sub_spectrum)
 
     enf = _post_process_enf(enf, snrs)

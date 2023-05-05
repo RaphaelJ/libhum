@@ -22,12 +22,10 @@ import math
 
 from typing import List, Optional, Tuple
 
-import attrs
 import numpy as np
 import pyopencl as cl
-import matplotlib.pyplot as plt
 
-from libhum.signal import ENFSignal
+from libhum.types import Signal, Match
 
 
 MIN_MATCH_DURATION = datetime.timedelta(minutes=3)
@@ -38,71 +36,18 @@ MIN_MATCH_CORR_COEFF = 0.8
 MIN_MATCH_LOCAL_MAXIMUM = datetime.timedelta(minutes=10)
 
 
-@attrs.define
-class ENFMatch:
-    # The offset to apply to the target signal to match the reference.
-    offset: datetime.timedelta
-
-    # The total duration of the matching signals (i.e. invalid values are ignored during the
-    # computation of the correlation coefficient).
-    duration: datetime.timedelta
-
-    # The Pearson's correlation coefficient for this match.
-    corr_coeff: float
-
-    def plot(self, ref: ENFSignal, target: ENFSignal):
-        if ref.signal_frequency != target.signal_frequency:
-            raise ValueError("signal frequencies should be identical.")
-
-        if ref.network_frequency != target.network_frequency:
-            raise ValueError("network frequencies should be identical.")
-
-        signal_frequency = ref.signal_frequency
-
-        sampling_rate = ref.signal_sampling_rate
-
-        match_len = math.floor(self.duration.total_seconds() * signal_frequency)
-
-        if ref.begins_at:
-            match_begins_at = ref.begins_at + self.offset
-            t = [match_begins_at + i * sampling_rate for i in range(0, match_len)]
-        else:
-            t = [(self.offset + i * sampling_rate).total_seconds() for i in range(0, match_len)]
-
-        offset_sample = math.floor(self.offset.total_seconds() * signal_frequency)
-
-        ref_samples = np.ma.empty(match_len, dtype=np.float32)
-        ref_samples[:] = np.ma.masked
-
-        ref_begin = max(0, offset_sample)
-        ref_samples[0:min(len(ref.signal), match_len)] = ref.signal[ref_begin:ref_begin + match_len]
-
-        target_samples = target.signal[0:match_len].astype(np.float32)
-
-        fig, ax = plt.subplots()
-
-        ax.plot(t, ref_samples + ref.network_frequency, color="blue", label="Reference ENF")
-        ax.plot(t, target_samples + target.network_frequency, color="red", label="Target ENF")
-
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Network frequency (Hz)")
-        ax.legend()
-
-        plt.show()
-
-
 class MatchBackend(enum.Enum):
     NUMPY = "numpy"
     OPENCL = "opencl"
 
 
 def match_signals(
-    ref: ENFSignal,
-    target: ENFSignal,
+    ref: Signal,
+    target: Signal,
     max_matches: Optional[int],
     step: datetime.timedelta = datetime.timedelta(seconds=1),
     backend: MatchBackend = MatchBackend.NUMPY,
-) -> List[ENFMatch]:
+) -> List[Match]:
     if ref.signal_frequency != target.signal_frequency:
         raise ValueError("signal frequencies should be identical.")
 
@@ -240,7 +185,7 @@ def _compute_corr_coeffs_opencl(
 def _build_matches(
     frequency: float, offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
     max_matches: Optional[int],
-) -> List[ENFMatch]:
+) -> List[Match]:
     """
     Post-processes the matches's coefficients by filtering poor matches and by merging adjacent
     matches.
@@ -293,7 +238,7 @@ def _build_matches(
 
     # Builds the ENFMatch objects.
     return [
-        ENFMatch(
+        Match(
             offset=datetime.timedelta(seconds=int(offset)),
             duration=datetime.timedelta(seconds=int(frequency * match_len)),
             corr_coeff=corr_coeff,
