@@ -35,6 +35,20 @@ from libhum.types import Signal
 DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/bin/services/apicache?path=/content/swissgrid/fr/home/operation/grid-data/current-data/jcr:content/parsys/chart_copy"
 
 
+def read_signal(path: str) -> Signal:
+    """Reads an ENF signal from a file."""
+
+    with open(path, "rb") as f:
+        return Signal.deserialize(f.read())
+
+
+def write_signal(path: str, signal: Signal):
+    """Writes an ENF signal to a file."""
+
+    with open(path, "wb") as f:
+        return f.write(signal.serialize())
+
+
 def read_audio(path: str) -> Tuple[np.array, float]:
     """Reads an audio file and returns its single channel buffer with its sampling frequency."""
 

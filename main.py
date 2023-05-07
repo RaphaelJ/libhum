@@ -19,7 +19,7 @@
 import argparse
 
 from libhum.analysis import compute_enf
-from libhum.io import read_audio
+from libhum.io import read_signal, write_signal, read_audio
 from libhum.match import MatchBackend, match_signals
 
 
@@ -42,11 +42,11 @@ def main():
 
     match_enf = subparsers.add_parser(
         "match_enf",
-        description="match two audio signals using the signals' ENF."
+        description="match two ENF signals based on their correlation coefficient."
     )
     match_enf.set_defaults(handler=_match_enf_handler)
-    match_enf.add_argument("file_a", type=str)
-    match_enf.add_argument("file_b", type=str)
+    match_enf.add_argument("ref", type=str)
+    match_enf.add_argument("target", type=str)
     match_enf.add_argument("--network-frequency", "-f", type=float, default=50.0)
     match_enf.add_argument("--max-matches", type=int, default=1)
     match_enf.add_argument("--opencl", action="store_true", default=False)
@@ -61,33 +61,40 @@ def _compute_enf_handler(args: argparse.Namespace):
     result = compute_enf(*read_audio(args.audio_file), network_frequency=args.network_frequency)
 
     if args.output_file:
-        with open(args.output_file, "wb") as f:
-            f.write(result.enf.serialize())
+        write_signal(args.output_file, result.enf)
 
     if args.plot:
         result.plot()
 
 
 def _match_enf_handler(args: argparse.Namespace):
-    enf_a = compute_enf(*read_audio(args.file_a), network_frequency=args.network_frequency).enf
-    enf_b = compute_enf(*read_audio(args.file_b), network_frequency=args.network_frequency).enf
+    ref = read_signal(args.ref)
+    target = read_signal(args.target)
 
     if args.opencl:
         backend = MatchBackend.OPENCL
     else:
         backend = MatchBackend.NUMPY
 
-    matches = match_signals(enf_a, enf_b, max_matches=args.max_matches, backend=backend)
+    matches = match_signals(ref, target, max_matches=args.max_matches, backend=backend)
 
     for match in matches:
-        print(
-            f"Corr. coeff.: {match.corr_coeff:>6.3f}\t" +
-            f"Offset: {match.offset}\t" +
-            f"Duration: {match.duration}"
-        )
+        if ref.begins_at is None:
+            print(
+                f"Corr. coeff.: {match.corr_coeff:>6.3f}\t" +
+                f"Offset: {match.offset}\t" +
+                f"Duration: {match.duration}"
+            )
+        else:
+            print(
+                f"Corr. coeff.: {match.corr_coeff:>6.3f}\t" +
+                f"Begins at: {ref.begins_at + match.offset}\t" +
+                f"Duration: {match.duration}"
+            )
+
 
         if args.plot:
-            match.plot(enf_a, enf_b)
+            match.plot(ref, target)
 
 
 if __name__ == "__main__":
