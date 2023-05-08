@@ -183,11 +183,11 @@ def _opencl_compute_corr_coeffs(
 
     mf = cl.mem_flags
 
-    offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=offsets - a_begin)
-    a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=a_float)
-    b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=b_float)
-    mask_a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=mask_a_int8)
-    mask_b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=mask_b_int8)
+    offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=offsets - a_begin)
+    a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=a_float)
+    b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=b_float)
+    mask_a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=mask_a_int8)
+    mask_b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=mask_b_int8)
 
     corr_coeffs_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, corr_coeffs.nbytes)
     match_lens_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, match_lens.nbytes)
