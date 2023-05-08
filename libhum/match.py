@@ -35,6 +35,8 @@ MIN_MATCH_CORR_COEFF = 0.8
 # Will ignore matches that have a better match within `MIN_MATCH_LOCAL_MAXIMUM`.
 MIN_MATCH_LOCAL_MAXIMUM = datetime.timedelta(minutes=10)
 
+MAX_BUFFER_SIZE = 128 * 1024 * 1024 # 128 MB
+
 
 class MatchBackend(enum.Enum):
     NUMPY = "numpy"
@@ -56,28 +58,50 @@ def match_signals(
 
     frequency = ref.signal_frequency
 
+    backend_instance = {
+        MatchBackend.NUMPY: _compute_corr_coeffs_numpy,
+        MatchBackend.OPENCL: _opencl_compute_corr_coeffs,
+    }[backend]
+
     ref_len = len(ref.signal)
     target_len = len(target.signal)
 
     min_matching_len = math.ceil(MIN_MATCH_DURATION.total_seconds() * frequency)
 
-    min_offset = - target_len + min_matching_len
-    max_offset = ref_len - min_matching_len
+    offset_begin = - target_len + min_matching_len
+    offset_end = ref_len - min_matching_len + 1
     step_offset = math.ceil(step.total_seconds() * frequency)
 
-    offsets = np.arange(min_offset, max_offset + 1, step_offset, dtype=np.int32)
+    offsets_chunks = []
+    corr_coeffs_chunks = []
+    match_lens_chunks = []
 
-    # Computes the coefficients using the selected backend for all offsets.
+    # Processes the offset domain by chunks so that buffers do not exceed MAX_BUFFER_SIZE.
+    chunk_size = MAX_BUFFER_SIZE // np.int32(0).nbytes
+    for chunk_begin in range(offset_begin, offset_end, chunk_size):
+        chunk_end = min(offset_end, chunk_begin + chunk_size)
 
-    if backend == MatchBackend.OPENCL:
-        corr_coeffs, match_lens = _opencl_compute_corr_coeffs(offsets, ref.signal, target.signal)
-    else:
-        corr_coeffs, match_lens = _compute_corr_coeffs_numpy(offsets, ref.signal, target.signal)
+        offsets = np.arange(chunk_begin, chunk_end, step_offset, dtype=np.int32)
 
-    assert len(corr_coeffs) == len(match_lens)
+        # Computes the coefficients using the selected backend
+        corr_coeffs, match_lens = backend_instance(offsets, ref.signal, target.signal)
+        assert len(corr_coeffs) == len(match_lens)
 
-    # Filters and sorts the resulting coefficients
+        # Reduces the memory usage by immediatly removing bad coefficients
+        offsets, corr_coeffs, match_lens = _filter_coeffs(
+            frequency, offsets, corr_coeffs, match_lens
+        )
 
+        offsets_chunks.append(offsets)
+        corr_coeffs_chunks.append(corr_coeffs)
+        match_lens_chunks.append(match_lens)
+
+    # Combines the chunked corr_coeffs and match_lens
+    offsets = np.concatenate(offsets_chunks)
+    corr_coeffs = np.concatenate(corr_coeffs_chunks)
+    match_lens = np.concatenate(match_lens_chunks)
+
+    # Sorts the resulting coefficients
     return _build_matches(frequency, offsets, corr_coeffs, match_lens, max_matches)
 
 
@@ -136,9 +160,14 @@ def _opencl_compute_corr_coeffs(
 ) -> Tuple[np.ndarray, np.ndarray]:
     _opencl_initialize()
 
+    # Selects only the section of `a` that will be computed against `b`.
+
+    a_begin = max(0, offsets.min())
+    a_end = min(len(a), offsets.max() + len(b))
+
     # Prepares Numpy buffers
 
-    a_float = a.astype(_opencl_buffer_dtype).data
+    a_float = a[a_begin:a_end].astype(_opencl_buffer_dtype).data
     b_float = b.astype(_opencl_buffer_dtype).data
 
     a_float[np.isnan(a_float)] = 0.0
@@ -154,7 +183,7 @@ def _opencl_compute_corr_coeffs(
 
     mf = cl.mem_flags
 
-    offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=offsets)
+    offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=offsets - a_begin)
     a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=a_float)
     b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=b_float)
     mask_a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=mask_a_int8)
@@ -168,8 +197,8 @@ def _opencl_compute_corr_coeffs(
     _opencl_program.corr_coeffs(
         _opencl_queue, (len(offsets),), None,
         offsets_gpu,
-        a_gpu, mask_a_gpu, np.int32(len(a)),
-        b_gpu, mask_b_gpu, np.int32(len(b)),
+        a_gpu, mask_a_gpu, np.int32(len(a_float)),
+        b_gpu, mask_b_gpu, np.int32(len(b_float)),
         corr_coeffs_gpu, match_lens_gpu,
     )
 
@@ -206,6 +235,24 @@ def _opencl_initialize():
         _opencl_program = cl.Program(
             _opencl_ctx, kernel_source
         ).build(options=list(_opencl_compiler_flags))
+
+
+def _filter_coeffs(
+    frequency: float, offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Filters out bad matches based on their coefficients."""
+
+    assert len(offsets) == len(corr_coeffs)
+    assert len(offsets) == len(match_lens)
+
+    min_matching_len = math.ceil(MIN_MATCH_DURATION.total_seconds() * frequency)
+
+    valids = (corr_coeffs >= MIN_MATCH_CORR_COEFF) & (match_lens >= min_matching_len)
+    offsets = offsets[valids].copy()
+    corr_coeffs = corr_coeffs[valids].copy()
+    match_lens = match_lens[valids].copy()
+
+    return offsets, corr_coeffs, match_lens
 
 
 def _build_matches(
