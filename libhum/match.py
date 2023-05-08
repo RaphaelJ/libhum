@@ -153,6 +153,7 @@ _opencl_ctx = None
 _opencl_queue = None
 _opencl_program = None
 _opencl_buffer_dtype = None
+_opencl_work_group_size = None
 _opencl_compiler_flags = set()
 
 def _opencl_compute_corr_coeffs(
@@ -192,11 +193,19 @@ def _opencl_compute_corr_coeffs(
     corr_coeffs_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, corr_coeffs.nbytes)
     match_lens_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, match_lens.nbytes)
 
+    # Computes the optimal work group size
+    offsets_per_thread = math.ceil(len(offsets) / _opencl_work_group_size)
+    n_threads = len(offsets) // offsets_per_thread
+    assert n_threads <= _opencl_work_group_size
+
+    print("n_threads:", n_threads)
+    print("offsets_per_thread:", offsets_per_thread)
+
     # Runs the OpenCL kernel
 
     _opencl_program.corr_coeffs(
-        _opencl_queue, (len(offsets),), None,
-        offsets_gpu,
+        _opencl_queue, (n_threads,), None,
+        offsets_gpu, np.int32(len(offsets)), np.int32(offsets_per_thread),
         a_gpu, mask_a_gpu, np.int32(len(a_float)),
         b_gpu, mask_b_gpu, np.int32(len(b_float)),
         corr_coeffs_gpu, match_lens_gpu,
@@ -209,7 +218,8 @@ def _opencl_compute_corr_coeffs(
 
 
 def _opencl_initialize():
-    global _opencl_ctx, _opencl_queue, _opencl_program, _opencl_buffer_dtype
+    global _opencl_ctx, _opencl_queue, _opencl_program
+    global _opencl_buffer_dtype, _opencl_work_group_size
 
     if _opencl_ctx is None:
         _opencl_ctx = cl.create_some_context()
@@ -227,6 +237,10 @@ def _opencl_initialize():
             _opencl_compiler_flags.add("-DUSE_FLOAT16_BUFFERS")
         else:
             _opencl_buffer_dtype = np.float32
+
+        # Saves the maximum work group size
+
+        _opencl_work_group_size = min(d.max_work_item_sizes[0] for d in _opencl_ctx.devices)
 
         # Builds the kernel
 

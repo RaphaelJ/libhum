@@ -24,6 +24,8 @@
 
 __kernel void corr_coeffs(
     __global const int *offsets,
+    const int offsets_size,
+    const int offsets_per_thread,
     __global const native_float *ref,
     __global const char *ref_mask,
     const int ref_size,
@@ -48,6 +50,8 @@ void _corr_coeff(
 
 __kernel void corr_coeffs(
     __global const int *offsets,
+    const int offsets_size,
+    const int offsets_per_thread,
     __global const native_float *ref,
     __global const char *ref_mask,
     const int ref_size,
@@ -58,23 +62,29 @@ __kernel void corr_coeffs(
     __global int *match_lens
 )
 {
-    int i = get_global_id(0);
+    int thread_id = get_global_id(0);
 
-    int offset = offsets[i];
+    const int offsets_begin = thread_id * offsets_per_thread;
+    const int offsets_end = min(offsets_size, offsets_begin + offsets_per_thread);
 
-    int ref_offset = max(0, offset);
-    int target_offset = max(0, -offset);
+    for (int i = offsets_begin; i < offsets_end; ++i) {
+        int offset = offsets[i];
 
-    int size = min(ref_size - ref_offset, target_size - target_offset);
+        int ref_offset = max(0, offset);
+        int target_offset = max(0, -offset);
 
-    const __global native_float *ref_begin = ref + ref_offset;
-    const __global char *ref_mask_begin = ref_mask + ref_offset;
-    const __global native_float *target_begin = target + target_offset;
-    const __global char *target_mask_begin = target_mask + target_offset;
+        int size = min(ref_size - ref_offset, target_size - target_offset);
 
-    _corr_coeff(
-        ref_begin, ref_mask_begin, target_begin, target_mask_begin, size, &coeffs[i], &match_lens[i]
-    );
+        const __global native_float *ref_begin = ref + ref_offset;
+        const __global char *ref_mask_begin = ref_mask + ref_offset;
+        const __global native_float *target_begin = target + target_offset;
+        const __global char *target_mask_begin = target_mask + target_offset;
+
+        _corr_coeff(
+            ref_begin, ref_mask_begin, target_begin, target_mask_begin, size,
+            &coeffs[i], &match_lens[i]
+        );
+    }
 }
 
 
