@@ -35,7 +35,7 @@ MIN_MATCH_CORR_COEFF = 0.8
 # Will ignore matches that have a better match within `MIN_MATCH_LOCAL_MAXIMUM`.
 MIN_MATCH_LOCAL_MAXIMUM = datetime.timedelta(minutes=10)
 
-MAX_BUFFER_SIZE = 128 * 1024 * 1024 # 128 MB
+MAX_BUFFER_SIZE = 64 * 1024 * 1024 # 64 MB
 
 
 class MatchBackend(enum.Enum):
@@ -173,7 +173,7 @@ def _opencl_compute_corr_coeffs(
     a_float[np.isnan(a_float)] = 0.0
     b_float[np.isnan(b_float)] = 0.0
 
-    mask_a_int8 = np.logical_not(a.mask).astype(np.int8)
+    mask_a_int8 = np.logical_not(a[a_begin:a_end].mask).astype(np.int8)
     mask_b_int8 = np.logical_not(b.mask).astype(np.int8)
 
     corr_coeffs = np.empty(len(offsets), dtype=np.float32)
