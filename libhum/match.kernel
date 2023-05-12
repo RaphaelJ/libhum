@@ -55,6 +55,7 @@
 #endif
 
 #define MAX_LOCAL_MEMORY_SIZE (24 * 1024)
+#define USE_LOCAL_MEMORY
 
 __kernel void corr_coeffs(
     __global const int *offsets,
@@ -69,21 +70,26 @@ __kernel void corr_coeffs(
     __global int *match_lens
 );
 
-
-__device void _group_copy_to_local(
-    __global const enf *src,
-    __global const char *src_mask,
-    __local enf *dst,
-    __local char *dst_mask,
-    int size
-);
-
+#ifdef USE_LOCAL_MEMORY
+    __device void _group_copy_to_local(
+        __global const enf *src,
+        __global const char *src_mask,
+        __local enf *dst,
+        __local char *dst_mask,
+        int size
+    );
+#endif
 
 __device void _corr_coeff(
     __global const enf *a,
     __global const char *mask_a,
-    __local const enf *b,
-    __local const char *mask_b,
+    #ifdef USE_LOCAL_MEMORY
+        __local const enf *b,
+        __local const char *mask_b,
+    #else
+        __global const enf *b,
+        __global const char *mask_b,
+    #endif
     int size,
     __global float *coeff,
     __global int *match_len
@@ -103,19 +109,21 @@ __kernel void corr_coeffs(
     __global int *match_lens
 )
 {
-    // Caches the target signal in local memory.
+    #ifdef USE_LOCAL_MEMORY
+        // Caches the target signal in local memory.
 
-    const int LOCAL_CACHE_SIZE = MAX_LOCAL_MEMORY_SIZE / (sizeof (*target) + sizeof (*target_mask));
+        const int LOCAL_CACHE_SIZE = MAX_LOCAL_MEMORY_SIZE / (sizeof (*target) + sizeof (*target_mask));
 
-    #ifdef BACKEND_IS_CUDA
-        __shared__ enf target_local[LOCAL_CACHE_SIZE];
-        __shared__ char target_mask_local[LOCAL_CACHE_SIZE];
-    #else
-        __local enf target_local[LOCAL_CACHE_SIZE];
-        __local char target_mask_local[LOCAL_CACHE_SIZE];
+        #ifdef BACKEND_IS_CUDA
+            __shared__ enf target_local[LOCAL_CACHE_SIZE];
+            __shared__ char target_mask_local[LOCAL_CACHE_SIZE];
+        #else
+            __local enf target_local[LOCAL_CACHE_SIZE];
+            __local char target_mask_local[LOCAL_CACHE_SIZE];
+        #endif
+
+        _group_copy_to_local(target, target_mask, target_local, target_mask_local, target_size);
     #endif
-
-    _group_copy_to_local(target, target_mask, target_local, target_mask_local, target_size);
 
     // Computes the comparison offsets.
 
@@ -134,8 +142,14 @@ __kernel void corr_coeffs(
 
     __global const enf *ref_begin = ref + ref_offset;
     __global const char *ref_mask_begin = ref_mask + ref_offset;
-    __local const enf *target_begin = target_local + target_offset;
-    __local const char *target_mask_begin = target_mask_local + target_offset;
+
+    #ifdef USE_LOCAL_MEMORY
+        __local const enf *target_begin = target_local + target_offset;
+        __local const char *target_mask_begin = target_mask_local + target_offset;
+    #else
+        __global const enf *target_begin = target + target_offset;
+        __global const char *target_mask_begin = target_mask + target_offset;
+    #endif
 
     // Computes the corr. coefficient.
 
@@ -146,33 +160,40 @@ __kernel void corr_coeffs(
 }
 
 
-__device void _group_copy_to_local(
-    __global const enf *src,
-    __global const char *src_mask,
-    __local enf *dst,
-    __local char *dst_mask,
-    int size
-)
-{
-    int n_items_per_thread = (size + get_local_size(0) - 1) / get_local_size(0);
+#ifdef USE_LOCAL_MEMORY
+    __device void _group_copy_to_local(
+        __global const enf *src,
+        __global const char *src_mask,
+        __local enf *dst,
+        __local char *dst_mask,
+        int size
+    )
+    {
+        int n_items_per_thread = (size + get_local_size(0) - 1) / get_local_size(0);
 
-    int current_begin = get_local_id(0) * n_items_per_thread;
-    int current_end = min(size, current_begin + n_items_per_thread);
+        int current_begin = get_local_id(0) * n_items_per_thread;
+        int current_end = min(size, current_begin + n_items_per_thread);
 
-    for (int i = current_begin; i < current_end; ++i) {
-        dst[i] = src[i];
-        dst_mask[i] = src_mask[i];
+        for (int i = current_begin; i < current_end; ++i) {
+            dst[i] = src[i];
+            dst_mask[i] = src_mask[i];
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
-
-    barrier(CLK_LOCAL_MEM_FENCE);
-}
+#endif
 
 
 __device void _corr_coeff(
     __global const enf *a,
     __global const char *mask_a,
-    __local const enf *b,
-    __local const char *mask_b,
+    #ifdef USE_LOCAL_MEMORY
+        __local const enf *b,
+        __local const char *mask_b,
+    #else
+        __global const enf *b,
+        __global const char *mask_b,
+    #endif
     int size,
     __global float *coeff,
     __global int *match_len
