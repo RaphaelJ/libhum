@@ -215,9 +215,6 @@ def _opencl_compute_corr_coeffs(
     cl.enqueue_copy(_opencl_queue, corr_coeffs, corr_coeffs_gpu)
     cl.enqueue_copy(_opencl_queue, match_lens, match_lens_gpu)
 
-    print(match_lens)
-    print(np.count_nonzero(match_lens))
-
     return corr_coeffs, match_lens
 
 
@@ -260,35 +257,8 @@ def _cuda_compute_corr_coeffs(
     offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
     import pycuda.driver as cuda
-    from pycuda.tools import make_default_context
 
-    cuda.init()
-
-    context = make_default_context()
-    device = context.get_device()
-
-    from pycuda.compiler import SourceModule, DEFAULT_NVCC_FLAGS
-
-    compiler_flags = DEFAULT_NVCC_FLAGS + ["-DBACKEND_IS_CUDA"]
-
-    # Detects the optimal buffer item size
-
-    supports_float16 = device.compute_capability() >= (5, 3)
-
-    if supports_float16:
-        _cuda_buffer_dtype = np.float16
-        compiler_flags.append("-DUSE_FLOAT16_BUFFERS")
-    else:
-        _cuda_buffer_dtype = np.float32
-
-    # Builds the kernel
-
-    _cuda_program = SourceModule(
-        _read_kernel_source(), no_extern_c=True, options=compiler_flags
-    )
-
-
-
+    _cuda_initialize()
 
     # Selects only the section of `a` that will be computed against `b`.
 
@@ -313,8 +283,6 @@ def _cuda_compute_corr_coeffs(
 
     n_blocks = math.ceil(len(offsets) / THREADS_PER_BLOCK)
 
-    print(len(offsets))
-
     _cuda_program.get_function("corr_coeffs")(
         cuda.In(offsets), np.int32(len(offsets)),
         cuda.In(a_float), cuda.In(mask_a_int8), np.int32(len(a_float)),
@@ -323,13 +291,6 @@ def _cuda_compute_corr_coeffs(
         grid=(n_blocks, 1, 1), block=(THREADS_PER_BLOCK, 1, 1),
     )
 
-    context.pop()
-    context = None
-
-    from pycuda.tools import clear_context_caches
-
-    clear_context_caches()
-
     return corr_coeffs, match_lens
 
 
@@ -337,9 +298,8 @@ def _cuda_initialize():
     global _cuda_program, _cuda_buffer_dtype
 
     if _cuda_program is None:
-        import pycuda.tools
+        import pycuda.autoinit
         from pycuda.compiler import SourceModule, DEFAULT_NVCC_FLAGS
-
 
         compiler_flags = DEFAULT_NVCC_FLAGS + ["-DBACKEND_IS_CUDA"]
 
