@@ -49,7 +49,9 @@ def main():
     match_enf.add_argument("target", type=str)
     match_enf.add_argument("--network-frequency", "-f", type=float, default=50.0)
     match_enf.add_argument("--max-matches", type=int, default=1)
-    match_enf.add_argument("--opencl", action="store_true", default=False)
+    match_enf.add_argument(
+        "--backend", choices=[b.value for b in MatchBackend], default=MatchBackend.NUMPY
+    )
     match_enf.add_argument("--plot", action="store_true", default=False)
 
     args = parser.parse_args()
@@ -71,12 +73,9 @@ def _match_enf_handler(args: argparse.Namespace):
     ref = read_signal(args.ref)
     target = read_signal(args.target)
 
-    if args.opencl:
-        backend = MatchBackend.OPENCL
-    else:
-        backend = MatchBackend.NUMPY
-
-    matches = match_signals(ref, target, max_matches=args.max_matches, backend=backend)
+    matches = match_signals(
+        ref, target, max_matches=args.max_matches, backend=MatchBackend(args.backend),
+    )
 
     for match in matches:
         if ref.begins_at is None:

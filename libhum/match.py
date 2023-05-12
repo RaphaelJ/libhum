@@ -19,11 +19,11 @@
 import datetime
 import enum
 import math
+import os.path
 
 from typing import List, Optional, Tuple
 
 import numpy as np
-import pyopencl as cl
 
 from libhum.types import Signal, Match
 
@@ -37,8 +37,13 @@ MIN_MATCH_LOCAL_MAXIMUM = datetime.timedelta(minutes=10)
 
 MAX_BUFFER_SIZE = 64 * 1024 * 1024 # 64 MB
 
+THREADS_PER_BLOCK = 256 # CUDA threads per bloc or OpenCL workers per group
+
+KERNEL_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "match.kernel")
+
 
 class MatchBackend(enum.Enum):
+    CUDA = "cuda"
     NUMPY = "numpy"
     OPENCL = "opencl"
 
@@ -59,6 +64,7 @@ def match_signals(
     frequency = ref.signal_frequency
 
     backend_instance = {
+        MatchBackend.CUDA: _cuda_compute_corr_coeffs,
         MatchBackend.NUMPY: _compute_corr_coeffs_numpy,
         MatchBackend.OPENCL: _opencl_compute_corr_coeffs,
     }[backend]
@@ -77,7 +83,7 @@ def match_signals(
     match_lens_chunks = []
 
     # Processes the offset domain by chunks so that buffers do not exceed MAX_BUFFER_SIZE.
-    chunk_size = MAX_BUFFER_SIZE // np.int32(0).nbytes
+    chunk_size = MAX_BUFFER_SIZE // np.int32(0).nbytes * step_offset
     for chunk_begin in range(offset_begin, offset_end, chunk_size):
         chunk_end = min(offset_end, chunk_begin + chunk_size)
 
@@ -153,12 +159,13 @@ _opencl_ctx = None
 _opencl_queue = None
 _opencl_program = None
 _opencl_buffer_dtype = None
-_opencl_work_group_size = None
-_opencl_compiler_flags = set()
+
 
 def _opencl_compute_corr_coeffs(
     offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
+    import pyopencl as cl
+
     _opencl_initialize()
 
     # Selects only the section of `a` that will be computed against `b`.
@@ -193,19 +200,13 @@ def _opencl_compute_corr_coeffs(
     corr_coeffs_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, corr_coeffs.nbytes)
     match_lens_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, match_lens.nbytes)
 
-    # Computes the optimal work group size
-    offsets_per_thread = math.ceil(len(offsets) / _opencl_work_group_size)
-    n_threads = len(offsets) // offsets_per_thread
-    assert n_threads <= _opencl_work_group_size
-
-    print("n_threads:", n_threads)
-    print("offsets_per_thread:", offsets_per_thread)
-
     # Runs the OpenCL kernel
 
+    n_blocks = math.ceil(len(offsets) / THREADS_PER_BLOCK)
+
     _opencl_program.corr_coeffs(
-        _opencl_queue, (n_threads,), None,
-        offsets_gpu, np.int32(len(offsets)), np.int32(offsets_per_thread),
+        _opencl_queue, (THREADS_PER_BLOCK * n_blocks,), (THREADS_PER_BLOCK,),
+        offsets_gpu, np.int32(len(offsets)),
         a_gpu, mask_a_gpu, np.int32(len(a_float)),
         b_gpu, mask_b_gpu, np.int32(len(b_float)),
         corr_coeffs_gpu, match_lens_gpu,
@@ -214,16 +215,22 @@ def _opencl_compute_corr_coeffs(
     cl.enqueue_copy(_opencl_queue, corr_coeffs, corr_coeffs_gpu)
     cl.enqueue_copy(_opencl_queue, match_lens, match_lens_gpu)
 
+    print(match_lens)
+    print(np.count_nonzero(match_lens))
+
     return corr_coeffs, match_lens
 
 
 def _opencl_initialize():
-    global _opencl_ctx, _opencl_queue, _opencl_program
-    global _opencl_buffer_dtype, _opencl_work_group_size
+    global _opencl_ctx, _opencl_queue, _opencl_program, _opencl_buffer_dtype
 
     if _opencl_ctx is None:
+        import pyopencl as cl
+
         _opencl_ctx = cl.create_some_context()
         _opencl_queue = cl.CommandQueue(_opencl_ctx)
+
+        compiler_flags = ["-DBACKEND_IS_OPENCL"]
 
         # Detects the optimal buffer item size
 
@@ -234,21 +241,123 @@ def _opencl_initialize():
 
         if supports_float16:
             _opencl_buffer_dtype = np.float16
-            _opencl_compiler_flags.add("-DUSE_FLOAT16_BUFFERS")
+            compiler_flags.append("-DUSE_FLOAT16_BUFFERS")
         else:
             _opencl_buffer_dtype = np.float32
 
-        # Saves the maximum work group size
+        # Builds the kernel
 
-        _opencl_work_group_size = min(d.max_work_item_sizes[0] for d in _opencl_ctx.devices)
+        _opencl_program = cl.Program(
+            _opencl_ctx, _read_kernel_source()
+        ).build(options=compiler_flags)
+
+
+_cuda_program = None
+_cuda_buffer_dtype = None
+
+
+def _cuda_compute_corr_coeffs(
+    offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
+) -> Tuple[np.ndarray, np.ndarray]:
+    import pycuda.driver as cuda
+    from pycuda.tools import make_default_context
+
+    cuda.init()
+
+    context = make_default_context()
+    device = context.get_device()
+
+    from pycuda.compiler import SourceModule, DEFAULT_NVCC_FLAGS
+
+    compiler_flags = DEFAULT_NVCC_FLAGS + ["-DBACKEND_IS_CUDA"]
+
+    # Detects the optimal buffer item size
+
+    supports_float16 = device.compute_capability() >= (5, 3)
+
+    if supports_float16:
+        _cuda_buffer_dtype = np.float16
+        compiler_flags.append("-DUSE_FLOAT16_BUFFERS")
+    else:
+        _cuda_buffer_dtype = np.float32
+
+    # Builds the kernel
+
+    _cuda_program = SourceModule(
+        _read_kernel_source(), no_extern_c=True, options=compiler_flags
+    )
+
+
+
+
+    # Selects only the section of `a` that will be computed against `b`.
+
+    a_begin = max(0, offsets.min())
+    a_end = min(len(a), offsets.max() + len(b))
+
+    # Prepares Numpy buffers
+
+    a_float = a[a_begin:a_end].astype(_cuda_buffer_dtype).data
+    b_float = b.astype(_cuda_buffer_dtype).data
+
+    a_float[np.isnan(a_float)] = 0.0
+    b_float[np.isnan(b_float)] = 0.0
+
+    mask_a_int8 = np.logical_not(a[a_begin:a_end].mask).astype(np.int8)
+    mask_b_int8 = np.logical_not(b.mask).astype(np.int8)
+
+    corr_coeffs = np.zeros(len(offsets), dtype=np.float32)
+    match_lens = np.zeros(len(offsets), dtype=np.int32)
+
+    # Runs the kernel
+
+    n_blocks = math.ceil(len(offsets) / THREADS_PER_BLOCK)
+
+    print(len(offsets))
+
+    _cuda_program.get_function("corr_coeffs")(
+        cuda.In(offsets), np.int32(len(offsets)),
+        cuda.In(a_float), cuda.In(mask_a_int8), np.int32(len(a_float)),
+        cuda.In(b_float), cuda.In(mask_b_int8), np.int32(len(b_float)),
+        cuda.Out(corr_coeffs), cuda.InOut(match_lens),
+        grid=(n_blocks, 1, 1), block=(THREADS_PER_BLOCK, 1, 1),
+    )
+
+    context.pop()
+    context = None
+
+    from pycuda.tools import clear_context_caches
+
+    clear_context_caches()
+
+    return corr_coeffs, match_lens
+
+
+def _cuda_initialize():
+    global _cuda_program, _cuda_buffer_dtype
+
+    if _cuda_program is None:
+        import pycuda.tools
+        from pycuda.compiler import SourceModule, DEFAULT_NVCC_FLAGS
+
+
+        compiler_flags = DEFAULT_NVCC_FLAGS + ["-DBACKEND_IS_CUDA"]
+
+        # Detects the optimal buffer item size
+
+        supports_float16 = pycuda.autoinit.device.compute_capability() >= (5, 3)
+
+        if supports_float16:
+            _cuda_buffer_dtype = np.float16
+            compiler_flags.append("-DUSE_FLOAT16_BUFFERS")
+        else:
+            _cuda_buffer_dtype = np.float32
 
         # Builds the kernel
 
-        with open("libhum/opencl/match.cl") as f:
-            kernel_source = f.read()
-        _opencl_program = cl.Program(
-            _opencl_ctx, kernel_source
-        ).build(options=list(_opencl_compiler_flags))
+        _cuda_program = SourceModule(
+            _read_kernel_source(), no_extern_c=True, options=compiler_flags
+        )
 
 
 def _filter_coeffs(
@@ -333,3 +442,8 @@ def _build_matches(
         for corr_coeff, match_len, offset
         in matches
     ]
+
+
+def _read_kernel_source() -> str:
+    with open(KERNEL_PATH) as f:
+        return f.read()
