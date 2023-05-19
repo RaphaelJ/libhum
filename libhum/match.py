@@ -21,7 +21,7 @@ import enum
 import math
 import os.path
 
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -29,8 +29,13 @@ from libhum.types import Signal, Match
 
 
 MIN_MATCH_DURATION = datetime.timedelta(minutes=3)
-MIN_MATCH_RATIO = 0.2
 MIN_MATCH_CORR_COEFF = 0.8
+
+# Runs a first a first approximation match at a lower signal frequency.
+APPROX_TARGET_FREQUENCY = 0.2
+APPROX_MIN_MATCH_DURATION = MIN_MATCH_DURATION * 0.75
+APPROX_MIN_MATCH_CORR_COEFF = MIN_MATCH_CORR_COEFF - 0.1
+APPROX_SEARCH_WINDOW = datetime.timedelta(seconds=1.0 / APPROX_TARGET_FREQUENCY * 2.0)
 
 # Will ignore matches that have a better match within `MIN_MATCH_LOCAL_MAXIMUM`.
 MIN_MATCH_LOCAL_MAXIMUM = datetime.timedelta(minutes=10)
@@ -69,46 +74,116 @@ def match_signals(
         MatchBackend.OPENCL: _opencl_compute_corr_coeffs,
     }[backend]
 
-    ref_len = len(ref.signal)
-    target_len = len(target.signal)
+    # Approximates the matching algorithm on downsampled signals.
 
-    min_matching_len = math.ceil(MIN_MATCH_DURATION.total_seconds() * frequency)
+    approx_q = math.floor(frequency / APPROX_TARGET_FREQUENCY)
+    approx_frequency = frequency / approx_q
+    assert approx_frequency >= APPROX_TARGET_FREQUENCY
 
-    offset_begin = - target_len + min_matching_len
-    offset_end = ref_len - min_matching_len + 1
+    ref_approx = _decimated_masked_array(ref.signal, approx_q)
+    target_approx = _decimated_masked_array(target.signal, approx_q)
+
+    min_approx_match_len = math.ceil(APPROX_MIN_MATCH_DURATION.total_seconds() * approx_frequency)
+
+    offset_begin = - len(target_approx) + min_approx_match_len
+    offset_end = len(ref_approx) - min_approx_match_len + 1
+    approx_step_offset = math.ceil(step.total_seconds() * approx_frequency)
+
+    approx_offsets = np.arange(offset_begin, offset_end, approx_step_offset, dtype=np.int32)
+
+    approx_offsets, _approx_corr_coeffs, _approx_match_lens = _compute_filtered_corr_coeffs(
+        backend_instance, approx_frequency, approx_offsets, ref_approx, target_approx,
+        min_approx_match_len, APPROX_MIN_MATCH_CORR_COEFF,
+    )
+
+    # Builds the lookup offsets from the approximated matches
+
+    assert np.all(approx_offsets[:-1] <= approx_offsets[1:]), "offsets must be sorted."
+
+    min_match_len = math.ceil(MIN_MATCH_DURATION.total_seconds() * frequency)
+    search_window_size = math.ceil(APPROX_SEARCH_WINDOW.total_seconds() * frequency)
+
+    min_offset = - len(target.signal) + min_match_len
+    max_offset = len(ref.signal) - min_match_len
+
+    offset_windows = []
+    for approx_offset in approx_offsets:
+        offset = approx_q * approx_offset
+
+        window_begin = max(min_offset, offset - search_window_size)
+        window_end = min(max_offset, offset + search_window_size + 1)
+
+        if len(offset_windows) > 0 and window_begin <= offset_windows[-1][1]:
+            offset_windows[-1][1] = window_end
+        else:
+            offset_windows.append([window_begin, window_end])
+
     step_offset = math.ceil(step.total_seconds() * frequency)
+
+    offsets = np.concatenate([
+        np.arange(window_begin, window_end, step_offset)
+        for window_begin, window_end in offset_windows
+    ])
+
+    # Search the approximated windows in the actual signal.
+
+    offsets, corr_coeffs, match_lens = _compute_filtered_corr_coeffs(
+        backend_instance, frequency, offsets, ref.signal, target.signal,
+        min_match_len, MIN_MATCH_CORR_COEFF,
+    )
+
+    # Sorts the resulting coefficients
+    return _build_matches(frequency, offsets, corr_coeffs, match_lens, max_matches)
+
+
+def _decimated_masked_array(array: np.ma.masked_array, q: int) -> np.ma.masked_array:
+    # This is a very naïve downsampling method, but it is fast and works on masked arrays.
+    idxs = np.arange(0, len(array), q)
+    return array[idxs]
+
+
+def _compute_filtered_corr_coeffs(
+    backend_instance: Callable, signal_frequency: float,
+    offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array,
+    min_match_len: int, min_match_corr_coeff: float,
+):
+    """
+    Computes the correlation coefficients for all the requested offsets using the requested
+    backend instance.
+    """
 
     offsets_chunks = []
     corr_coeffs_chunks = []
     match_lens_chunks = []
 
     # Processes the offset domain by chunks so that buffers do not exceed MAX_BUFFER_SIZE.
-    chunk_size = MAX_BUFFER_SIZE // np.int32(0).nbytes * step_offset
-    for chunk_begin in range(offset_begin, offset_end, chunk_size):
-        chunk_end = min(offset_end, chunk_begin + chunk_size)
+    chunk_size = MAX_BUFFER_SIZE // np.int32(0).nbytes
+    for chunk_begin in range(0, len(offsets), chunk_size):
+        chunk_end = min(len(offsets), chunk_begin + chunk_size)
 
-        offsets = np.arange(chunk_begin, chunk_end, step_offset, dtype=np.int32)
+        chunk_offsets = offsets[chunk_begin:chunk_end]
 
         # Computes the coefficients using the selected backend
-        corr_coeffs, match_lens = backend_instance(offsets, ref.signal, target.signal)
+        corr_coeffs, match_lens = backend_instance(chunk_offsets, a, b)
         assert len(corr_coeffs) == len(match_lens)
 
         # Reduces the memory usage by immediatly removing bad coefficients
-        offsets, corr_coeffs, match_lens = _filter_coeffs(
-            frequency, offsets, corr_coeffs, match_lens
+        chunk_offsets, corr_coeffs, match_lens = _filter_coeffs(
+            signal_frequency, chunk_offsets, corr_coeffs, match_lens,
+            min_match_len, min_match_corr_coeff,
         )
 
-        offsets_chunks.append(offsets)
+        offsets_chunks.append(chunk_offsets)
         corr_coeffs_chunks.append(corr_coeffs)
         match_lens_chunks.append(match_lens)
+
 
     # Combines the chunked corr_coeffs and match_lens
     offsets = np.concatenate(offsets_chunks)
     corr_coeffs = np.concatenate(corr_coeffs_chunks)
     match_lens = np.concatenate(match_lens_chunks)
 
-    # Sorts the resulting coefficients
-    return _build_matches(frequency, offsets, corr_coeffs, match_lens, max_matches)
+    return offsets, corr_coeffs, match_lens
 
 
 def _compute_corr_coeffs_numpy(
@@ -175,6 +250,8 @@ def _opencl_compute_corr_coeffs(
 
     # Prepares Numpy buffers
 
+    offsets_shifted = (offsets - a_begin).astype(np.int32)
+
     a_float = a[a_begin:a_end].astype(_opencl_buffer_dtype).data
     b_float = b.astype(_opencl_buffer_dtype).data
 
@@ -191,7 +268,7 @@ def _opencl_compute_corr_coeffs(
 
     mf = cl.mem_flags
 
-    offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=offsets - a_begin)
+    offsets_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=offsets_shifted)
     a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=a_float)
     b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=b_float)
     mask_a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=mask_a_int8)
@@ -206,7 +283,7 @@ def _opencl_compute_corr_coeffs(
 
     _opencl_program.corr_coeffs(
         _opencl_queue, (THREADS_PER_BLOCK * n_blocks,), (THREADS_PER_BLOCK,),
-        offsets_gpu, np.int32(len(offsets)),
+        offsets_gpu, np.int32(len(offsets_shifted)),
         a_gpu, mask_a_gpu, np.int32(len(a_float)),
         b_gpu, mask_b_gpu, np.int32(len(b_float)),
         corr_coeffs_gpu, match_lens_gpu,
@@ -267,6 +344,8 @@ def _cuda_compute_corr_coeffs(
 
     # Prepares Numpy buffers
 
+    offsets_shifted = (offsets - a_begin).astype(np.int32)
+
     a_float = a[a_begin:a_end].astype(_cuda_buffer_dtype).data
     b_float = b.astype(_cuda_buffer_dtype).data
 
@@ -284,7 +363,7 @@ def _cuda_compute_corr_coeffs(
     n_blocks = math.ceil(len(offsets) / THREADS_PER_BLOCK)
 
     _cuda_program.get_function("corr_coeffs")(
-        cuda.In(offsets), np.int32(len(offsets)),
+        cuda.In(offsets_shifted), np.int32(len(offsets_shifted)),
         cuda.In(a_float), cuda.In(mask_a_int8), np.int32(len(a_float)),
         cuda.In(b_float), cuda.In(mask_b_int8), np.int32(len(b_float)),
         cuda.Out(corr_coeffs), cuda.InOut(match_lens),
@@ -322,15 +401,14 @@ def _cuda_initialize():
 
 def _filter_coeffs(
     frequency: float, offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
+    min_match_len: int, min_match_corr_coeff: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Filters out bad matches based on their coefficients."""
 
     assert len(offsets) == len(corr_coeffs)
     assert len(offsets) == len(match_lens)
 
-    min_matching_len = math.ceil(MIN_MATCH_DURATION.total_seconds() * frequency)
-
-    valids = (corr_coeffs >= MIN_MATCH_CORR_COEFF) & (match_lens >= min_matching_len)
+    valids = (corr_coeffs >= min_match_corr_coeff) & (match_lens >= min_match_len)
     offsets = offsets[valids].copy()
     corr_coeffs = corr_coeffs[valids].copy()
     match_lens = match_lens[valids].copy()
@@ -349,15 +427,6 @@ def _build_matches(
 
     assert len(offsets) == len(corr_coeffs)
     assert len(offsets) == len(match_lens)
-
-    # Filters out bad matches.
-
-    min_matching_len = math.ceil(MIN_MATCH_DURATION.total_seconds() * frequency)
-
-    valids = (corr_coeffs >= MIN_MATCH_CORR_COEFF) & (match_lens >= min_matching_len)
-    offsets = offsets[valids]
-    corr_coeffs = corr_coeffs[valids]
-    match_lens = match_lens[valids]
 
     # Filters out matches that are not local maximas.
 
