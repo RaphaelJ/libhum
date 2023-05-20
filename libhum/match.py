@@ -32,7 +32,7 @@ MIN_MATCH_DURATION = datetime.timedelta(minutes=3)
 MIN_MATCH_CORR_COEFF = 0.8
 
 # Runs a first a first approximation match at a lower signal frequency.
-APPROX_TARGET_FREQUENCY = 0.2
+APPROX_TARGET_FREQUENCY = 0.1
 APPROX_MIN_MATCH_DURATION = MIN_MATCH_DURATION * 0.75
 APPROX_MIN_MATCH_CORR_COEFF = MIN_MATCH_CORR_COEFF - 0.1
 APPROX_SEARCH_WINDOW = datetime.timedelta(seconds=1.0 / APPROX_TARGET_FREQUENCY * 2.0)
@@ -426,6 +426,7 @@ def _build_matches(
     """
 
     assert len(offsets) == len(corr_coeffs)
+
     assert len(offsets) == len(match_lens)
 
     # Filters out matches that are not local maximas.
