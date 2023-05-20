@@ -57,6 +57,8 @@ ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=5)
 ENF_LOW_SNR_THRES = 2.0
 ENF_MAX_GRADIENT = 0.0075
 
+import datetime
+
 
 def compute_enf(
     signal: np.array, signal_frequency: float, network_frequency: float = 50.0
@@ -96,7 +98,7 @@ def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.nd
     downsampled_frequency = signal_frequency / decimation_q
     assert downsampled_frequency >= MIN_DECIMATED_FREQUENCY
 
-    return scipy.signal.decimate(signal, decimation_q), downsampled_frequency
+    return scipy.signal.decimate(signal, decimation_q, ftype="fir", n=16), downsampled_frequency
 
 
 def _signal_spectrum(
@@ -154,7 +156,7 @@ def _spectrum_normalize(spectrum: np.ndarray, frequency: float) -> np.ndarray:
 
     spectrum = spectrum.transpose()
 
-    for i, window_begin in enumerate(range(0, len(spectrum), window_size)):
+    for window_begin in range(0, len(spectrum), window_size):
         window_end = window_begin + window_size
 
         window = spectrum[window_begin:window_end]
@@ -207,7 +209,6 @@ def _quadratic_interpolation(spectrum, max_amp_idx, bin_size):
 
 
 def _post_process_enf(enf: np.ndarray, snrs: np.ndarray) -> np.ma.masked_array:
-
     smoothed = _gaussian_filter_enf(enf)
 
     # Clips any value out of the network's frequency band

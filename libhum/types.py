@@ -65,18 +65,6 @@ class Signal:
         plt.ylim(self.network_frequency - 0.1, self.network_frequency + 0.1)
         plt.show()
 
-    def downsample(self, new_frequency: float) -> "Signal":
-        if new_frequency > self.frequency:
-            raise ValueError("only downsampling is supported.")
-
-        if self.frequency % new_frequency != 0:
-            raise ValueError("new frequency should be a multiple of the signal frequency.")
-
-        q = self.frequency // new_frequency
-        new_signal = scipy.signal.decimate(self.signal, q)
-
-        return attrs.evolve(self, signal_frequency=new_frequency, signal=new_signal)
-
     def serialize(self) -> bytes:
         # Pickles a regular Python directory so that it stays somewhat backward compatible.
         pickled = pickle.dumps({
