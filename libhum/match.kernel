@@ -24,7 +24,7 @@
     #define __device            __device__
 
     #define __global
-    #define __local             __shared__
+    #define __local
 
     #define get_local_id(d)     (d == 0 ? threadIdx.x : (d == 1 ? threadIdx.y : threadIdx.z))
     #define get_local_size(d)   (d == 0 ? blockDim.x : (d == 1 ? blockDim.y : blockDim.z))
@@ -55,7 +55,7 @@
 #endif
 
 #define MAX_LOCAL_MEMORY_SIZE (24 * 1024)
-#define USE_LOCAL_MEMORY
+
 
 __kernel void corr_coeffs(
     __global const int *offsets,
@@ -112,7 +112,8 @@ __kernel void corr_coeffs(
     #ifdef USE_LOCAL_MEMORY
         // Caches the target signal in local memory.
 
-        const int LOCAL_CACHE_SIZE = MAX_LOCAL_MEMORY_SIZE / (sizeof (*target) + sizeof (*target_mask));
+        const int TARGET_ITEM_SIZE = sizeof (*target) + sizeof (*target_mask);
+        const int LOCAL_CACHE_SIZE = MAX_LOCAL_MEMORY_SIZE / TARGET_ITEM_SIZE;
 
         #ifdef BACKEND_IS_CUDA
             __shared__ enf target_local[LOCAL_CACHE_SIZE];
@@ -122,7 +123,9 @@ __kernel void corr_coeffs(
             __local char target_mask_local[LOCAL_CACHE_SIZE];
         #endif
 
-        _group_copy_to_local(target, target_mask, target_local, target_mask_local, target_size);
+        _group_copy_to_local(
+            target, target_mask, target_local, target_mask_local, min(target_size, LOCAL_CACHE_SIZE)
+        );
     #endif
 
     // Computes the comparison offsets.
