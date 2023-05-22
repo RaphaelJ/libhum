@@ -95,6 +95,9 @@ def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.nd
 
     decimation_q = int(signal_frequency // MIN_DECIMATED_FREQUENCY)
 
+    if decimation_q <= 1:
+        return signal, signal_frequency
+
     downsampled_frequency = signal_frequency / decimation_q
     assert downsampled_frequency >= MIN_DECIMATED_FREQUENCY
 
