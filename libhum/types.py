@@ -109,6 +109,9 @@ class Match:
     # The Pearson's correlation coefficient for this match.
     corr_coeff: float
 
+    # A probabilistic ([0..1]) score of the match.
+    score: float
+
     def plot(self, ref: Signal, target: Signal):
         if ref.signal_frequency != target.signal_frequency:
             raise ValueError("signal frequencies should be identical.")

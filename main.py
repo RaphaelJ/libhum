@@ -80,12 +80,14 @@ def _match_enf_handler(args: argparse.Namespace):
     for match in matches:
         if ref.begins_at is None:
             print(
+                f"Score: {match.score:>6.3f}\t" +
                 f"Corr. coeff.: {match.corr_coeff:>6.3f}\t" +
                 f"Offset: {match.offset}\t" +
                 f"Duration: {match.duration}"
             )
         else:
             print(
+                f"Score: {match.score:>6.3f}\t" +
                 f"Corr. coeff.: {match.corr_coeff:>6.3f}\t" +
                 f"Begins at: {ref.begins_at + match.offset}\t" +
                 f"Duration: {match.duration}"

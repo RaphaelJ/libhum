@@ -3,7 +3,6 @@ audiofile
 lz4
 matplotlib
 numpy
-pyopencl
 pytz
 requests
 sortedcontainers

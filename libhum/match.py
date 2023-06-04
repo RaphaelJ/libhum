@@ -28,8 +28,8 @@ import numpy as np
 from libhum.types import Signal, Match
 
 
-MIN_MATCH_DURATION = datetime.timedelta(minutes=3)
-MIN_MATCH_CORR_COEFF = 0.8
+MIN_MATCH_DURATION = datetime.timedelta(minutes=1)
+MIN_MATCH_CORR_COEFF = 0.6
 
 # Runs a first a first approximation match at a lower signal frequency.
 APPROX_TARGET_FREQUENCY = 0.1
@@ -97,6 +97,9 @@ def match_signals(
     )
 
     # Builds the lookup offsets from the approximated matches
+
+    if len(approx_offsets) < 1:
+        return []
 
     assert np.all(approx_offsets[:-1] <= approx_offsets[1:]), "offsets must be sorted."
 
@@ -454,10 +457,11 @@ def _build_matches(
     offsets = offsets[match_mask]
     corr_coeffs = corr_coeffs[match_mask]
     match_lens = match_lens[match_mask]
+    scores = _match_scores(frequency, corr_coeffs, match_lens)
 
     # Sorts the matches
 
-    matches = sorted(zip(corr_coeffs, match_lens, offsets), reverse=True)
+    matches = sorted(zip(scores, corr_coeffs, match_lens, offsets), reverse=True)
 
     if max_matches is not None:
         matches = matches[:max_matches]
@@ -468,10 +472,23 @@ def _build_matches(
             offset=datetime.timedelta(seconds=int(offset)),
             duration=datetime.timedelta(seconds=int(frequency * match_len)),
             corr_coeff=corr_coeff,
+            score=score,
         )
-        for corr_coeff, match_len, offset
+        for score, corr_coeff, match_len, offset
         in matches
+        if score > 0
     ]
+
+
+def _match_scores(frequency: float, corr_coeff: np.ndarray, match_lens: np.ndarray) -> np.ndarray:
+    """Estimates a probabilistic score ([0..1]) of a match."""
+
+    # See https://gist.github.com/RaphaelJ/d5bb2a9e597fb60b0117b8eaaa8425f6 for the estimation
+    # of the regression coefficients.
+
+    sqrt_sec_duration = np.sqrt(match_lens * frequency)
+    score = -0.056555 * sqrt_sec_duration + 0.099599 * corr_coeff * sqrt_sec_duration + -0.307455
+    return np.clip(score, 0, 1)
 
 
 def _read_kernel_source() -> str:
