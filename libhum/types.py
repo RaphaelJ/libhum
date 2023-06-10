@@ -65,6 +65,9 @@ class Signal:
         plt.ylim(self.network_frequency - 0.1, self.network_frequency + 0.1)
         plt.show()
 
+    def quality(self) -> float:
+        return 1.0 - np.mean(self.signal.mask)
+
     def serialize(self) -> bytes:
         # Pickles a regular Python directory so that it stays somewhat backward compatible.
         pickled = pickle.dumps({
