@@ -62,6 +62,11 @@ def main():
 def _compute_enf_handler(args: argparse.Namespace):
     result = compute_enf(*read_audio(args.audio_file), network_frequency=args.network_frequency)
 
+    print(
+        f"Duration: {result.enf.duration}\t" +
+        f"Quality: {result.enf.quality() * 100:.2f}%\t"
+    )
+
     if args.output_file:
         write_signal(args.output_file, result.enf)
 

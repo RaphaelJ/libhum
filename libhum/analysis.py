@@ -39,15 +39,15 @@ MIN_DECIMATED_FREQUENCY = 1000.0
 FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 
 SPECTRUM_BAND_SIZE = 0.2 # e.g. 49.8 to 50.2 for 50Hz ENF.
-STFT_WINDOW_SIZE = datetime.timedelta(seconds=20)
+STFT_WINDOW_SIZE = datetime.timedelta(seconds=18)
 
 # Post-filters the spectrum with a running normalization filter of the specified window size.
-NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=60)
+NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=30)
 
 ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
 
 # Post-filters the detected ENF with a Gaussian filter.
-ENF_GAUSSIAN_SIGMA = 2
+ENF_GAUSSIAN_SIGMA = 2.0
 
 # Post-filters the detected ENF by selecting good sections with an high S/N and a minimum duration,
 # and by expanding these to neighboring lower S/N sections if the signal's gradient is within the
