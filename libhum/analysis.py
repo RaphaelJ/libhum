@@ -70,6 +70,10 @@ def compute_enf(
     spectrum = _signal_spectrum(decimated_signal, decimated_frequency, network_frequency)
 
     f, t, Zxx = spectrum
+
+    if len(f) < 2 or len(t) < 1:
+        raise ValueError(f"unable to compute spectrum on signal of length {len(signal)}.")
+
     enf, snr = _detect_enf(f, t, Zxx, network_frequency)
 
     enf_signal = Signal(
@@ -145,7 +149,9 @@ def _bandpass_filter(
 def _stft(signal: np.ndarray, frequency: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Performs a Short-time Fourier Transform (STFT) on the input signal."""
 
-    window_size_seconds = STFT_WINDOW_SIZE.total_seconds()
+    signal_duration = len(signal) / frequency
+
+    window_size_seconds = min(signal_duration, STFT_WINDOW_SIZE.total_seconds())
     nperseg = int(frequency * window_size_seconds / ENF_OUTPUT_FREQUENCY)
     noverlap = int(frequency * (window_size_seconds - 1) / ENF_OUTPUT_FREQUENCY)
 
