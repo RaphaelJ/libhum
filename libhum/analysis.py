@@ -25,6 +25,7 @@ Provides DSP algorithms to extract ENF signal from sound recordings.
 
 import datetime
 import enum
+import math
 from typing import Tuple
 
 import numpy as np
@@ -122,11 +123,9 @@ def _signal_spectrum(
 
     filtered_data = _bandpass_filter(signal, signal_frequency, locut, hicut, order=10)
 
-    f, t, Zxx = _stft(filtered_data, signal_frequency)
+    f, t, Zxx = _stft(filtered_data, signal_frequency, locut, hicut)
 
-    band_f_idx = (f >= locut) & (f <= hicut)
-
-    return f[band_f_idx], t, _spectrum_normalize(Zxx[band_f_idx], ENF_OUTPUT_FREQUENCY)
+    return f, t, _spectrum_normalize(Zxx, ENF_OUTPUT_FREQUENCY)
 
 
 def _bandpass_filter(
@@ -146,16 +145,61 @@ def _bandpass_filter(
     return scipy.signal.sosfilt(sos, signal)
 
 
-def _stft(signal: np.ndarray, frequency: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _stft(
+    signal: np.ndarray, frequency: float, locut: float, hicut: float
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Performs a Short-time Fourier Transform (STFT) on the input signal."""
+
+    STFT_CHUNK_SIZE = 256
 
     signal_duration = len(signal) / frequency
 
     window_size_seconds = min(signal_duration, STFT_WINDOW_SIZE.total_seconds())
-    nperseg = int(frequency * window_size_seconds / ENF_OUTPUT_FREQUENCY)
-    noverlap = int(frequency * (window_size_seconds - 1) / ENF_OUTPUT_FREQUENCY)
+    nperseg = int(frequency * window_size_seconds)
+    noverlap = int(frequency * window_size_seconds - frequency / ENF_OUTPUT_FREQUENCY)
 
-    return scipy.signal.stft(signal, frequency, nperseg=nperseg, noverlap=noverlap)
+    assert STFT_CHUNK_SIZE / ENF_OUTPUT_FREQUENCY >= window_size_seconds
+
+    # Computes the STFT on small chunks to reduce the memory usage.
+
+    f = None
+    ts = []
+    Zxxs = []
+
+    hopsize = nperseg - noverlap
+    output_len = math.ceil(len(signal) / hopsize) + 1
+
+    window_half_size = nperseg // 2
+
+    for chunk_begin in range(0, output_len, STFT_CHUNK_SIZE):
+        chunk_end = chunk_begin + STFT_CHUNK_SIZE
+
+        signal_begin = max(
+            0,
+            int(chunk_begin / ENF_OUTPUT_FREQUENCY * frequency - window_half_size)
+        )
+        signal_end = int(chunk_end / ENF_OUTPUT_FREQUENCY * frequency + window_half_size)
+
+        chunk = signal[signal_begin:signal_end]
+
+        if signal_begin == 0:
+            output_begin = 0
+        else:
+            assert signal_begin >= window_size_seconds
+            output_begin = int(window_half_size / frequency * ENF_OUTPUT_FREQUENCY)
+
+        f, t, Zxx = scipy.signal.stft(chunk, frequency, nperseg=nperseg, noverlap=noverlap)
+
+        band_f_idx = (f >= locut) & (f <= hicut)
+
+        f = f[band_f_idx]
+        ts.append(t[output_begin:output_begin+STFT_CHUNK_SIZE] + chunk_begin / ENF_OUTPUT_FREQUENCY)
+        Zxxs.append(Zxx[band_f_idx, output_begin:output_begin+STFT_CHUNK_SIZE])
+
+    t = np.concatenate(ts)
+    Zxx = np.concatenate(Zxxs, axis=1)
+
+    return f, t, Zxx
 
 
 def _spectrum_normalize(spectrum: np.ndarray, frequency: float) -> np.ndarray:
