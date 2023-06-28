@@ -40,6 +40,13 @@ def main():
     compute_enf.add_argument("--network-frequency", "-f", type=float, default=50.0)
     compute_enf.add_argument("--plot", action="store_true", default=False)
 
+    plot_enf = subparsers.add_parser(
+        "plot_enf",
+        description="plots a previously computed ENF signal."
+    )
+    plot_enf.set_defaults(handler=_plot_enf_handler)
+    plot_enf.add_argument("enf_file", type=str)
+
     match_enf = subparsers.add_parser(
         "match_enf",
         description="match two ENF signals based on their correlation coefficient."
@@ -72,6 +79,17 @@ def _compute_enf_handler(args: argparse.Namespace):
 
     if args.plot:
         result.plot()
+
+
+def _plot_enf_handler(args: argparse.Namespace):
+    enf = read_signal(args.enf_file)
+
+    print(
+        f"Duration: {enf.duration}\t" +
+        f"Quality: {enf.quality() * 100:.2f}%\t"
+    )
+
+    enf.plot()
 
 
 def _match_enf_handler(args: argparse.Namespace):
