@@ -34,31 +34,33 @@ import scipy
 from libhum.types import Signal, AnalysisResult
 
 
+# Parameters obtained on training data using
+# https://gist.github.com/RaphaelJ/254d7f0868ffb8eed9c43a17ad71f0bd
+
 # Tries to decimate the original signal so that it is at least that frequency.
 MIN_DECIMATED_FREQUENCY = 1000.0
 
 FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 
-SPECTRUM_BAND_SIZE = 0.2 # e.g. 49.8 to 50.2 for 50Hz ENF.
+SPECTRUM_BAND_SIZE = 0.25 # e.g. 49.75 to 50.25 for 50Hz ENF.
 STFT_WINDOW_SIZE = datetime.timedelta(seconds=18)
 
 # Post-filters the spectrum with a running normalization filter of the specified window size.
-NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=30)
+# Disabled if None.
+NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=25)
 
 ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
 
-# Post-filters the detected ENF with a Gaussian filter.
-ENF_GAUSSIAN_SIGMA = 2.0
+# Post-filters the detected ENF with a Gaussian filter. Disabled if None.
+ENF_GAUSSIAN_SIGMA = 2.5
 
 # Post-filters the detected ENF by selecting good sections with an high S/N and a minimum duration,
 # and by expanding these to neighboring lower S/N sections if the signal's gradient is within the
 # expected range.
-ENF_HIGH_SNR_THRES = 3.0
+ENF_HIGH_SNR_THRES = 3.5
 ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=5)
-ENF_LOW_SNR_THRES = 2.0
-ENF_MAX_GRADIENT = 0.0075
-
-import datetime
+ENF_LOW_SNR_THRES = 1.5
+ENF_MAX_GRADIENT = 0.004
 
 
 def compute_enf(
@@ -97,6 +99,9 @@ def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.nd
 
     Returns the new signal frequency and the decimated signal.
     """
+
+    if signal_frequency <= MIN_DECIMATED_FREQUENCY:
+        return signal, signal_frequency
 
     decimation_q = int(signal_frequency // MIN_DECIMATED_FREQUENCY)
 
@@ -205,7 +210,11 @@ def _stft(
 def _spectrum_normalize(spectrum: np.ndarray, frequency: float) -> np.ndarray:
     """Normalizes to the mean and stddev over NORMALIZE_WINDOW_SIZE."""
 
-    window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * frequency)
+    if NORMALIZE_WINDOW_SIZE is None:
+        # Normalizes over the whole signal.
+        window_size = len(spectrum)
+    else:
+        window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * frequency)
 
     spectrum = spectrum.transpose()
 
@@ -276,6 +285,9 @@ def _post_process_enf(enf: np.ndarray, snrs: np.ndarray) -> np.ma.masked_array:
 
 
 def _gaussian_filter_enf(enf: np.ma.masked_array) -> np.ma.masked_array:
+    if ENF_GAUSSIAN_SIGMA is None:
+        return enf
+
     return scipy.ndimage.gaussian_filter1d(
         enf.astype(np.float64), sigma=ENF_GAUSSIAN_SIGMA
     ).astype(np.float16)

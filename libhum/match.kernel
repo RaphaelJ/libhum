@@ -218,7 +218,7 @@ __device void _corr_coeff(
         mean_b += (float) b[i] * mask_float;
     }
 
-    if ((float)match_len_local / size < 0.2f) {
+    if ((float)match_len_local / size < 0.05f) {
         *coeff = NAN;
         *match_len = 0;
         return;
