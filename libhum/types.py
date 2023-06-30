@@ -68,35 +68,37 @@ class Signal:
     def quality(self) -> float:
         return 1.0 - np.mean(self.signal.mask)
 
-    def serialize(self) -> bytes:
-        # Pickles a regular Python directory so that it stays somewhat backward compatible.
-        pickled = pickle.dumps({
+    def as_dict(self) -> dict:
+        return {
             "network_frequency": self.network_frequency,
             "signal_frequency": self.signal_frequency,
             "signal": self.signal.astype(np.float16).tobytes(fill_value=np.nan),
             "begins_at": self.begins_at.isoformat() if self.begins_at is not None else None,
-        })
-
-        return lz4.frame.compress(pickled)
+        }
 
     @staticmethod
-    def deserialize(data: bytes) -> "Signal":
-        decompressed = lz4.frame.decompress(data)
-        unpickled = pickle.loads(decompressed)
+    def from_dict(value: dict) -> "Signal":
+        signal = np.ma.masked_invalid(np.frombuffer(value["signal"], dtype=np.float16))
 
-        signal = np.ma.masked_invalid(np.frombuffer(unpickled["signal"], dtype=np.float16))
-
-        if unpickled["begins_at"] is not None:
-            begins_at = datetime.datetime.fromisoformat(unpickled["begins_at"])
+        if value["begins_at"] is not None:
+            begins_at = datetime.datetime.fromisoformat(value["begins_at"])
         else:
             begins_at = None
 
         return Signal(
-            network_frequency=unpickled["network_frequency"],
-            signal_frequency=unpickled["signal_frequency"],
+            network_frequency=value["network_frequency"],
+            signal_frequency=value["signal_frequency"],
             signal=signal,
             begins_at=begins_at
         )
+
+    def serialize(self) -> bytes:
+        return _serialize_dict(self.as_dict())
+
+    @staticmethod
+    def deserialize(data: bytes) -> "Signal":
+        return Signal.from_dict(_deserialize_dict(data))
+
 
 @attrs.define
 class Match:
@@ -190,3 +192,46 @@ class AnalysisResult:
         ax.legend(h + h_snr, l + l_snr, loc=2)
 
         plt.show()
+
+    def as_dict(self) -> dict:
+        return {
+            "enf": self.enf.as_dict(),
+            "spectrum": {
+                "f": self.spectrum[0].astype(np.float64).tobytes(),
+                "t": self.spectrum[1].astype(np.float64).tobytes(),
+                "Zxx": self.spectrum[2].astype(np.float64).tobytes(),
+            },
+            "snr": self.snr.astype(np.float32).tobytes(),
+            "frequency_harmonic": self.frequency_harmonic,
+        }
+
+    @staticmethod
+    def from_dict(value: dict) -> "AnalysisResult":
+        f = np.frombuffer(value["spectrum"]["f"], dtype=np.float64)
+        t = np.frombuffer(value["spectrum"]["t"], dtype=np.float64)
+        Zxx = np.frombuffer(value["spectrum"]["Zxx"], dtype=np.float64)
+        Zxx = Zxx.reshape((f.shape[0], t.shape[0]))
+
+        return AnalysisResult(
+            enf=Signal.from_dict(value["enf"]),
+            spectrum=(f, t, Zxx),
+            snr=np.frombuffer(value["snr"], dtype=np.float32),
+            frequency_harmonic=value["frequency_harmonic"],
+        )
+
+    def serialize(self) -> bytes:
+        return _serialize_dict(self.as_dict())
+
+    @staticmethod
+    def deserialize(data: bytes) -> "AnalysisResult":
+        return AnalysisResult.from_dict(_deserialize_dict(data))
+
+
+def _serialize_dict(value: dict) -> bytes:
+    pickled = pickle.dumps(value)
+    return lz4.frame.compress(pickled)
+
+
+def _deserialize_dict(value: bytes) -> dict:
+    decompressed = lz4.frame.decompress(value)
+    return pickle.loads(decompressed)
