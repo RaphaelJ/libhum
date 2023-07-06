@@ -429,7 +429,6 @@ def _build_matches(
     """
 
     assert len(offsets) == len(corr_coeffs)
-
     assert len(offsets) == len(match_lens)
 
     # Filters out matches that are not local maximas.
@@ -469,8 +468,8 @@ def _build_matches(
     # Builds the ENFMatch objects.
     return [
         Match(
-            offset=datetime.timedelta(seconds=int(offset)),
-            duration=datetime.timedelta(seconds=int(frequency * match_len)),
+            offset=datetime.timedelta(seconds=int(offset / frequency)),
+            duration=datetime.timedelta(seconds=int(match_len / frequency)),
             corr_coeff=corr_coeff,
             score=score,
         )
@@ -486,7 +485,7 @@ def _match_scores(frequency: float, corr_coeff: np.ndarray, match_lens: np.ndarr
     # See https://gist.github.com/RaphaelJ/d5bb2a9e597fb60b0117b8eaaa8425f6 for the estimation
     # of the regression coefficients.
 
-    sqrt_sec_duration = np.sqrt(match_lens * frequency)
+    sqrt_sec_duration = np.sqrt(match_lens / frequency)
     score = -0.056555 * sqrt_sec_duration + 0.099599 * corr_coeff * sqrt_sec_duration + -0.307455
     return np.clip(score, 0, 1)
 

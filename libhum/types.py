@@ -26,7 +26,6 @@ import attrs
 import lz4.frame
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy
 
 
 @attrs.define
