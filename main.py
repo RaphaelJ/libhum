@@ -71,6 +71,7 @@ def _compute_enf_handler(args: argparse.Namespace):
 
     print(
         f"Duration: {result.enf.duration}\t" +
+        f"Frequency harmonic: {result.frequency_harmonic}\t" +
         f"Quality: {result.enf.quality() * 100:.2f}%\t"
     )
 

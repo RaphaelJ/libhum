@@ -74,25 +74,14 @@ def compute_enf(
         decimated_signal, decimated_frequency, network_frequency, frequency_harmonics
     )
 
-    f, t, Zxx = spectrum[0]
+    # Computes the ENF signal for each harmonic, and keeps the best one.
 
-    if len(f) < 2 or len(t) < 1:
-        raise ValueError(f"unable to compute spectrum on signal of length {len(signal)}.")
-
-    enf, snr = _detect_enf(f, t, Zxx, network_frequency, frequency_harmonics[0])
-
-    enf_signal = Signal(
-        network_frequency=network_frequency,
-        signal=enf,
-        signal_frequency=ENF_OUTPUT_FREQUENCY,
+    results = (
+        _detect_enf(harmonic_spectrum, network_frequency, frequency_harmonic)
+        for frequency_harmonic, harmonic_spectrum in zip(frequency_harmonics, spectrum)
     )
 
-    return AnalysisResult(
-        enf=enf_signal,
-        spectrum=spectrum[0],
-        snr=snr,
-        frequency_harmonic=frequency_harmonics[0],
-    )
+    return max(results, key=lambda result: result.enf.quality())
 
 
 def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.ndarray, float]:
@@ -235,6 +224,9 @@ def _stft(
     t = np.concatenate(ts)
     Zxx = np.concatenate(Zxxs, axis=1)
 
+    if len(f) < 2 or len(t) < 1:
+        raise ValueError(f"unable to compute spectrum on signal of length {len(signal)}.")
+
     return [
         (f[(f >= lo_cut) & (f <= hi_cut)], t, Zxx[(f >= lo_cut) & (f <= hi_cut)])
         for lo_cut, hi_cut in lo_hi_cuts
@@ -266,17 +258,19 @@ def _spectrum_normalize(spectrum: np.ndarray, signal_frequency: float) -> np.nda
 
 
 def _detect_enf(
-    f: np.ndarray, t: np.ndarray, spectrum: np.ndarray, network_frequency: float,
+    spectrum: Tuple[np.ndarray, np.ndarray, np.ndarray], network_frequency: float,
     frequency_harmonic: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Detects the ENF signal at 1Hz in the normalized spectrum, with its SNR vector."""
+) -> AnalysisResult:
+    """Detects the ENF signal at ENF_OUTPUT_FREQUENCY in the normalized spectrum."""
+
+    f, t, Zxx = spectrum
 
     bin_size = f[1] - f[0]
 
     enf = np.empty(len(t), dtype=np.float16)
     snrs = np.empty(len(t), dtype=np.float32)
 
-    for i, sub_spectrum in enumerate(spectrum.transpose()):
+    for i, sub_spectrum in enumerate(Zxx.transpose()):
         max_amp = np.amax(sub_spectrum)
 
         max_amp_idx = np.where(sub_spectrum == max_amp)[0][0]
@@ -287,7 +281,18 @@ def _detect_enf(
 
     enf = _post_process_enf(enf, snrs)
 
-    return enf, snrs
+    enf_signal = Signal(
+        network_frequency=network_frequency,
+        signal=enf,
+        signal_frequency=ENF_OUTPUT_FREQUENCY,
+    )
+
+    return AnalysisResult(
+        enf=enf_signal,
+        spectrum=spectrum,
+        snr=snrs,
+        frequency_harmonic=frequency_harmonic,
+    )
 
 
 def _quadratic_interpolation(spectrum, max_amp_idx, bin_size):
@@ -447,3 +452,4 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
         i += 1
 
     return np.ma.array(enf, mask=enf.mask | thres_mask)
+
