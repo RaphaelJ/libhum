@@ -26,7 +26,7 @@ Provides DSP algorithms to extract ENF signal from sound recordings.
 import datetime
 import enum
 import math
-from typing import Tuple
+from typing import List, Tuple
 
 import numpy as np
 import scipy
@@ -39,8 +39,6 @@ from libhum.types import Signal, AnalysisResult
 
 # Tries to decimate the original signal so that it is at least that frequency.
 MIN_DECIMATED_FREQUENCY = 1000.0
-
-FREQUENCY_HARMONIC = 2 # e.g. look a the 100Hz signal for 50Hz ENF
 
 SPECTRUM_BAND_SIZE = 0.25 # e.g. 49.75 to 50.25 for 50Hz ENF.
 STFT_WINDOW_SIZE = datetime.timedelta(seconds=18)
@@ -56,28 +54,32 @@ ENF_GAUSSIAN_SIGMA = 2.5
 
 # Post-filters the detected ENF by selecting good sections with an high S/N and a minimum duration,
 # and by expanding these to neighboring lower S/N sections if the signal's gradient is within the
-# expected range.
-ENF_HIGH_SNR_THRES = 3.5
+# expected range. Allows short invalid sections of up to ENF_ARTIFACT_MAX_DURATION.
+ENF_HIGH_SNR_THRES = 3.0
 ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=5)
 ENF_LOW_SNR_THRES = 1.5
 ENF_MAX_GRADIENT = 0.004
+ENF_ARTIFACT_MAX_DURATION = datetime.timedelta(seconds=0)
 
 
 def compute_enf(
-    signal: np.array, signal_frequency: float, network_frequency: float = 50.0
+    signal: np.array, signal_frequency: float, network_frequency: float = 50.0,
+    frequency_harmonics: List[int] = [1, 2],
 ) -> AnalysisResult:
     """Detects the ENF signal in the provided audio signal."""
 
     decimated_signal, decimated_frequency = _signal_decimate(signal, signal_frequency)
 
-    spectrum = _signal_spectrum(decimated_signal, decimated_frequency, network_frequency)
+    spectrum = _signal_spectrum(
+        decimated_signal, decimated_frequency, network_frequency, frequency_harmonics
+    )
 
-    f, t, Zxx = spectrum
+    f, t, Zxx = spectrum[0]
 
     if len(f) < 2 or len(t) < 1:
         raise ValueError(f"unable to compute spectrum on signal of length {len(signal)}.")
 
-    enf, snr = _detect_enf(f, t, Zxx, network_frequency)
+    enf, snr = _detect_enf(f, t, Zxx, network_frequency, frequency_harmonics[0])
 
     enf_signal = Signal(
         network_frequency=network_frequency,
@@ -87,9 +89,9 @@ def compute_enf(
 
     return AnalysisResult(
         enf=enf_signal,
-        spectrum=spectrum,
+        spectrum=spectrum[0],
         snr=snr,
-        frequency_harmonic=FREQUENCY_HARMONIC,
+        frequency_harmonic=frequency_harmonics[0],
     )
 
 
@@ -115,45 +117,66 @@ def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.nd
 
 
 def _signal_spectrum(
-    signal: np.ndarray, signal_frequency: float, network_frequency: float
-) -> np.array:
+    signal: np.ndarray, signal_frequency: float, network_frequency: float,
+    frequency_harmonics: List[int],
+) -> List[Tuple[np.array, np.array, np.array]]:
     """
-    Computes the normalized STFT spectrum for the given network frequency's harmonic.
+    Computes the normalized STFT spectrum for the given network frequency's harmonics.
 
-    Returns the frequencies, timestamp, and the target frequency band's spectrum.
+    Returns the frequencies, timestamp, and spectrum for every requested harmonic's frequency band.
     """
 
-    locut = FREQUENCY_HARMONIC * (network_frequency - SPECTRUM_BAND_SIZE)
-    hicut = FREQUENCY_HARMONIC * (network_frequency + SPECTRUM_BAND_SIZE)
+    lo_hi_cuts = [
+        (
+            harmonic * (network_frequency - SPECTRUM_BAND_SIZE),
+            harmonic * (network_frequency + SPECTRUM_BAND_SIZE)
+        )
+        for harmonic in frequency_harmonics
+    ]
 
-    filtered_data = _bandpass_filter(signal, signal_frequency, locut, hicut, order=10)
+    filtered_data = _bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
 
-    f, t, Zxx = _stft(filtered_data, signal_frequency, locut, hicut)
-
-    return f, t, _spectrum_normalize(Zxx, ENF_OUTPUT_FREQUENCY)
+    return [
+        (f, t, _spectrum_normalize(Zxx, ENF_OUTPUT_FREQUENCY))
+        for f, t, Zxx in _stft(filtered_data, signal_frequency, lo_hi_cuts)
+    ]
 
 
 def _bandpass_filter(
-    signal: np.ndarray, frequency: float, locut: float, hicut: float, order: int
+    signal: np.ndarray, frequency: float, lo_hi_cuts: List[Tuple[int, int]], order: int
 ) -> np.array:
     """
     Passes input data through a Butterworth bandpass filter. Code borrowed from
     https://scipy-cookbook.readthedocs.io/items/ButterworthBandpass.html
     """
 
-    nyq = 0.5 * frequency
-    low = locut / nyq
-    high = hicut / nyq
+    filtered_data = None
 
-    sos = scipy.signal.butter(order, [low, high], analog=False, btype='band', output='sos')
+    for lo_cut, hi_cut in lo_hi_cuts:
+        nyq = 0.5 * frequency
+        low = lo_cut / nyq
+        high = hi_cut / nyq
 
-    return scipy.signal.sosfilt(sos, signal)
+        sos = scipy.signal.butter(order, [low, high], analog=False, btype='band', output='sos')
+
+        harmonic_filtered_data = scipy.signal.sosfilt(sos, signal)
+
+        if filtered_data is None:
+            filtered_data = harmonic_filtered_data
+        else:
+            filtered_data = np.maximum(filtered_data, harmonic_filtered_data)
+
+    return filtered_data
 
 
 def _stft(
-    signal: np.ndarray, frequency: float, locut: float, hicut: float
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Performs a Short-time Fourier Transform (STFT) on the input signal."""
+    signal: np.ndarray, frequency: float, lo_hi_cuts: List[Tuple[int, int]],
+) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Performs a Short-time Fourier Transform (STFT) on the input signal for the given bands
+
+    Return the frequencies, timestamps and spectrum for each requested frequency band.
+    """
 
     STFT_CHUNK_SIZE = 256
 
@@ -195,26 +218,37 @@ def _stft(
 
         f, t, Zxx = scipy.signal.stft(chunk, frequency, nperseg=nperseg, noverlap=noverlap)
 
-        band_f_idx = (f >= locut) & (f <= hicut)
+        band_f_idxs = None
 
-        f = f[band_f_idx]
+        for lo_cut, hi_cut in lo_hi_cuts:
+            harmonic_f_idxs = (f >= lo_cut) & (f <= hi_cut)
+
+            if band_f_idxs is None:
+                band_f_idxs = harmonic_f_idxs
+            else:
+                band_f_idxs |= harmonic_f_idxs
+
+        f = f[band_f_idxs]
         ts.append(t[output_begin:output_begin+STFT_CHUNK_SIZE] + chunk_begin / ENF_OUTPUT_FREQUENCY)
-        Zxxs.append(Zxx[band_f_idx, output_begin:output_begin+STFT_CHUNK_SIZE])
+        Zxxs.append(Zxx[band_f_idxs, output_begin:output_begin+STFT_CHUNK_SIZE])
 
     t = np.concatenate(ts)
     Zxx = np.concatenate(Zxxs, axis=1)
 
-    return f, t, Zxx
+    return [
+        (f[(f >= lo_cut) & (f <= hi_cut)], t, Zxx[(f >= lo_cut) & (f <= hi_cut)])
+        for lo_cut, hi_cut in lo_hi_cuts
+    ]
 
 
-def _spectrum_normalize(spectrum: np.ndarray, frequency: float) -> np.ndarray:
+def _spectrum_normalize(spectrum: np.ndarray, signal_frequency: float) -> np.ndarray:
     """Normalizes to the mean and stddev over NORMALIZE_WINDOW_SIZE."""
 
     if NORMALIZE_WINDOW_SIZE is None:
         # Normalizes over the whole signal.
         window_size = len(spectrum)
     else:
-        window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * frequency)
+        window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * signal_frequency)
 
     spectrum = spectrum.transpose()
 
@@ -233,6 +267,7 @@ def _spectrum_normalize(spectrum: np.ndarray, frequency: float) -> np.ndarray:
 
 def _detect_enf(
     f: np.ndarray, t: np.ndarray, spectrum: np.ndarray, network_frequency: float,
+    frequency_harmonic: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Detects the ENF signal at 1Hz in the normalized spectrum, with its SNR vector."""
 
@@ -247,7 +282,7 @@ def _detect_enf(
         max_amp_idx = np.where(sub_spectrum == max_amp)[0][0]
         max_amp_freq = f[0] + _quadratic_interpolation(sub_spectrum, max_amp_idx, bin_size)
 
-        enf[i] = max_amp_freq / FREQUENCY_HARMONIC - network_frequency
+        enf[i] = max_amp_freq / frequency_harmonic - network_frequency
         snrs[i] = max_amp / np.mean(sub_spectrum)
 
     enf = _post_process_enf(enf, snrs)
@@ -307,7 +342,9 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
     - do not have any sample derivative higher than ENF_MAX_DERIV_THRES
     """
 
-    min_section_duration = ENF_OUTPUT_FREQUENCY * ENF_HIGH_SNR_MIN_DURATION.total_seconds()
+    min_section_len = ENF_OUTPUT_FREQUENCY * ENF_HIGH_SNR_MIN_DURATION.total_seconds()
+    max_artifact_len = ENF_OUTPUT_FREQUENCY * ENF_ARTIFACT_MAX_DURATION.total_seconds()
+    max_gradient = ENF_MAX_GRADIENT / ENF_OUTPUT_FREQUENCY
 
     def clipped(i: int) -> bool:
         return np.ma.is_masked(enf) and enf.mask[i]
@@ -319,12 +356,12 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
         return snrs[i] >= ENF_HIGH_SNR_THRES
 
     def above_min_section_duration(section_duration: int) -> bool:
-        return section_duration >= min_section_duration
+        return section_duration >= min_section_len
 
     gradient = np.abs(np.gradient(enf))
 
     def below_max_gradient(i: int) -> bool:
-        return gradient[i] <= (ENF_MAX_GRADIENT / ENF_OUTPUT_FREQUENCY)
+        return gradient[i] <= max_gradient
 
     class FilterState(enum.Enum):
         # Initial state, the filter is looking for a sample with S/N above ENF_HIGH_SNR_THRES.
@@ -337,8 +374,13 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
         # ENF_LOW_SNR_THRES.
         IN_VALID_SECTION = 3
 
+        # The current signal went below the ENF_LOW_SNR_THRES, or above the ENF_MAX_GRADIENT.
+        IN_ARTIFACT = 4
+
     state = FilterState.SEARCHING
-    section_duration = None
+    section_len = None
+    artifact_len = None
+    artifact_total_gradient = None
 
     thres_mask = np.ma.masked_all(len(enf)).mask
 
@@ -346,25 +388,35 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
     while i < len(enf):
         if state == FilterState.SEARCHING:
             if not clipped(i) and above_high_threshold(i) and below_max_gradient(i):
-                section_duration = 1
+                section_len = 1
                 state = FilterState.ABOVE_HIGH_THRESHOLD
         elif state == FilterState.ABOVE_HIGH_THRESHOLD:
             if not clipped(i) and above_high_threshold(i) and below_max_gradient(i):
-                section_duration += 1
+                section_len += 1
 
-                if above_min_section_duration(section_duration):
+                if above_min_section_duration(section_len):
                     state = FilterState.IN_VALID_SECTION
+                    thres_mask[i] = False
 
                     # Extends the section left-wise to any previously ignored low threshold section.
-                    j = i
-                    while (
-                        j >= 0 and
-                        not clipped(j) and
-                        thres_mask[j] and
-                        above_low_threshold(j) and
-                        below_max_gradient(j)
-                    ):
-                        thres_mask[j] = False
+                    artifact_len = 0
+                    artifact_total_gradient = 0
+                    j = i - 1
+                    while j >= 0 and thres_mask[j] and artifact_len <= max_artifact_len:
+                        artifact_len += 1
+                        artifact_total_gradient += gradient[i]
+
+                        if (
+                            not clipped(j) and
+                            above_low_threshold(j) and
+                            below_max_gradient(j) and
+                            artifact_total_gradient / artifact_len < max_gradient
+                        ):
+                            thres_mask[j] = False
+
+                            artifact_len = 0
+                            artifact_total_gradient = 0
+
                         j -= 1
             else:
                 state = FilterState.SEARCHING
@@ -372,7 +424,25 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
             if not clipped(i) and above_low_threshold(i) and below_max_gradient(i):
                 thres_mask[i] = False
             else:
-                state = FilterState.SEARCHING
+                state = FilterState.IN_ARTIFACT
+                artifact_len = 1
+                artifact_total_gradient = gradient[i]
+        elif state == FilterState.IN_ARTIFACT:
+            if (
+                not clipped(i) and
+                above_low_threshold(i) and
+                below_max_gradient(i) and
+                (artifact_total_gradient / artifact_len < max_gradient or above_high_threshold(i))
+            ):
+                thres_mask[i] = False
+                state = FilterState.IN_VALID_SECTION
+            else:
+                artifact_len += 1
+                artifact_total_gradient += gradient[i]
+
+                if artifact_len > max_artifact_len:
+                    thres_mask[i] = False
+                    state = FilterState.SEARCHING
 
         i += 1
 
