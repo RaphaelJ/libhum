@@ -127,7 +127,8 @@ class Match:
 
         sampling_rate = ref.signal_sampling_rate
 
-        match_len = math.floor(self.duration.total_seconds() * signal_frequency)
+        duration = min(ref.duration - self.offset, target.duration)
+        match_len = math.floor(duration.total_seconds() * signal_frequency)
 
         if ref.begins_at:
             match_begins_at = ref.begins_at + self.offset
