@@ -20,10 +20,10 @@ import datetime
 import csv
 
 from typing import List, Tuple
+from zoneinfo import ZoneInfo
 
 import audiofile
 import numpy as np
-import pytz
 import requests
 import scipy
 
@@ -78,7 +78,10 @@ def read_weti(path: str, frequency: float) -> Signal:
 
         freq = float(value[6])
 
-        dt = datetime.datetime(year, month, day, hour, minute, second, microsecond) + dt_offset
+        dt = datetime.datetime(
+            year, month, day, hour, minute, second, microsecond,
+            tzinfo=datetime.timezone.utc
+        ) + dt_offset
         return dt, freq
 
     with open(path, "r") as file:
@@ -102,7 +105,7 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
     See https://www.swissgrid.ch/en/home/operation/grid-data/current-data.html
     """
 
-    swiss_tz = pytz.timezone("Europe/Zurich")
+    swiss_tz = ZoneInfo("Europe/Zurich")
     network_frequency = 50.0
 
     resp = requests.get(url)
@@ -111,8 +114,8 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
     values = resp.json()["data"]["series"][0]["data"]
 
     def parse_swiss_grid_value(timestamp: int, enf: float):
-        local_dt = swiss_tz.localize(datetime.datetime.utcfromtimestamp(timestamp / 1000))
-        utc_dt = local_dt.astimezone(pytz.utc)
+        local_dt = datetime.datetime.utcfromtimestamp(timestamp / 1000).replace(tzinfo=swiss_tz)
+        utc_dt = local_dt.astimezone(datetime.timezone.utc)
         return utc_dt, enf - network_frequency
 
     sparse_signal = SortedDict(parse_swiss_grid_value(*v) for v in values)
