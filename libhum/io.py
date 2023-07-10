@@ -19,6 +19,7 @@
 import datetime
 import csv
 
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -63,24 +64,24 @@ def read_weti(path: str, frequency: float) -> Signal:
     See https://osf.io/jbk82/.
     """
 
-    def parse_weti_value(value: List[str]) -> Tuple[datetime.datetime, float]:
+    def parse_weti_value(value: List[str]) -> Tuple[datetime, float]:
         year, month, day, hour, minute = tuple(int(v) for v in value[:5])
 
         second_fract = float(value[5])
         if second_fract >= 60:
-            dt_offset = datetime.timedelta(seconds=60)
+            dt_offset = timedelta(seconds=60)
             second_fract -= 60
         else:
-            dt_offset = datetime.timedelta(0)
+            dt_offset = timedelta(0)
 
         second = int(second_fract)
         microsecond = int((second_fract - second) * 1_000_000)
 
         freq = float(value[6])
 
-        dt = datetime.datetime(
+        dt = datetime(
             year, month, day, hour, minute, second, microsecond,
-            tzinfo=datetime.timezone.utc
+            tzinfo=timezone.utc
         ) + dt_offset
         return dt, freq
 
@@ -114,8 +115,8 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
     values = resp.json()["data"]["series"][0]["data"]
 
     def parse_swiss_grid_value(timestamp: int, enf: float):
-        local_dt = datetime.datetime.utcfromtimestamp(timestamp / 1000).replace(tzinfo=swiss_tz)
-        utc_dt = local_dt.astimezone(datetime.timezone.utc)
+        local_dt = datetime.utcfromtimestamp(timestamp / 1000).replace(tzinfo=swiss_tz)
+        utc_dt = local_dt.astimezone(timezone.utc)
         return utc_dt, enf - network_frequency
 
     sparse_signal = SortedDict(parse_swiss_grid_value(*v) for v in values)
@@ -131,8 +132,8 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
 
 
 def _resample_sparse_signal(
-    sparse_signal: SortedDict[datetime.datetime, float], frequency
-) -> Tuple[np.ma.masked_array, datetime.datetime]:
+    sparse_signal: SortedDict[datetime, float], frequency
+) -> Tuple[np.ma.masked_array, datetime]:
     """
     Samples the sparse signal at the requested frequency.
 
@@ -141,11 +142,11 @@ def _resample_sparse_signal(
 
     INTERP_RANGE = 2 # Interpolates the values up to 2x the output sampling rate
 
-    sampling_rate = datetime.timedelta(seconds=1.0 / frequency)
+    sampling_rate = timedelta(seconds=1.0 / frequency)
 
     interp_range_td = INTERP_RANGE * sampling_rate
 
-    def interp_value(at: datetime.datetime) -> float:
+    def interp_value(at: datetime) -> float:
         """Linear interpolates the signal value based on the closest values."""
 
         # Collects all samples within INTERP_RANGE.
@@ -163,11 +164,11 @@ def _resample_sparse_signal(
                 bounds_error=False,
             )(0.0)
 
-    def round_datetime(dt: datetime.datetime) -> datetime.datetime:
+    def round_datetime(dt: datetime) -> datetime:
         if dt.microsecond < 500_000:
             return dt.replace(microsecond=0)
         else:
-            return dt.replace(microsecond=0) + datetime.timedelta(seconds=1)
+            return dt.replace(microsecond=0) + timedelta(seconds=1)
 
     begins_at = round_datetime(sparse_signal.peekitem(0)[0])
     ends_at = round_datetime(sparse_signal.peekitem(-1)[0])
