@@ -16,10 +16,10 @@
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 
-import datetime
 import math
 import pickle
 
+from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import attrs
@@ -39,18 +39,18 @@ class Signal:
     # The ENF signal, relative to the network's frequency.
     signal: np.ma.masked_array = attrs.field()
 
-    begins_at: Optional[datetime.datetime] = attrs.field(default=None)
+    begins_at: Optional[datetime] = attrs.field(default=None)
 
     @property
-    def signal_sampling_rate(self) -> datetime.timedelta:
-        return datetime.timedelta(seconds=1.0 / self.signal_frequency)
+    def signal_sampling_rate(self) -> timedelta:
+        return timedelta(seconds=1.0 / self.signal_frequency)
 
     @property
-    def duration(self) -> datetime.timedelta:
+    def duration(self) -> timedelta:
         return self.signal_sampling_rate * len(self.signal)
 
     @property
-    def ends_at(self) -> Optional[datetime.datetime]:
+    def ends_at(self) -> Optional[datetime]:
         if self.begins_at is not None:
             return self.begins_at + self.duration
         else:
@@ -80,7 +80,7 @@ class Signal:
         signal = np.ma.masked_invalid(np.frombuffer(value["signal"], dtype=np.float16))
 
         if value["begins_at"] is not None:
-            begins_at = datetime.datetime.fromisoformat(value["begins_at"])
+            begins_at = datetime.fromisoformat(value["begins_at"])
         else:
             begins_at = None
 
@@ -104,11 +104,11 @@ class Match:
     """A single result of a time matching comparison between two ENF signals."""
 
     # The offset to apply to the target signal to match the reference.
-    offset: datetime.timedelta
+    offset: timedelta
 
     # The total duration of the matching signals (i.e. invalid values are ignored during the
     # computation of the correlation coefficient).
-    duration: datetime.timedelta
+    duration: timedelta
 
     # The Pearson's correlation coefficient for this match.
     corr_coeff: float

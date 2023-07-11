@@ -172,8 +172,8 @@ def _stft(
     signal_duration = len(signal) / frequency
 
     window_size_seconds = min(signal_duration, STFT_WINDOW_SIZE.total_seconds())
-    nperseg = int(frequency * window_size_seconds)
-    noverlap = int(frequency * window_size_seconds - frequency / ENF_OUTPUT_FREQUENCY)
+    n_perseg = int(frequency * window_size_seconds)
+    n_overlap = int(frequency * window_size_seconds - frequency / ENF_OUTPUT_FREQUENCY)
 
     assert STFT_CHUNK_SIZE / ENF_OUTPUT_FREQUENCY >= window_size_seconds
 
@@ -183,10 +183,10 @@ def _stft(
     ts = []
     Zxxs = []
 
-    hopsize = nperseg - noverlap
+    hopsize = n_perseg - n_overlap
     output_len = math.ceil(len(signal) / hopsize) + 1
 
-    window_half_size = nperseg // 2
+    window_half_size = n_perseg // 2
 
     for chunk_begin in range(0, output_len, STFT_CHUNK_SIZE):
         chunk_end = chunk_begin + STFT_CHUNK_SIZE
@@ -199,13 +199,17 @@ def _stft(
 
         chunk = signal[signal_begin:signal_end]
 
+        if len(chunk) < n_perseg:
+            # FIXME: do not skip the last chunk when it's shorter than STFT_WINDOW_SIZE
+            break
+
         if signal_begin == 0:
             output_begin = 0
         else:
             assert signal_begin >= window_size_seconds
             output_begin = int(window_half_size / frequency * ENF_OUTPUT_FREQUENCY)
 
-        f, t, Zxx = scipy.signal.stft(chunk, frequency, nperseg=nperseg, noverlap=noverlap)
+        f, t, Zxx = scipy.signal.stft(chunk, frequency, nperseg=n_perseg, noverlap=n_overlap)
 
         band_f_idxs = None
 
