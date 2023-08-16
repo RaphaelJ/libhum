@@ -228,9 +228,6 @@ def _stft(
     t = np.concatenate(ts)
     Zxx = np.concatenate(Zxxs, axis=1)
 
-    if len(f) < 2 or len(t) < 1:
-        raise ValueError(f"unable to compute spectrum on signal of length {len(signal)}.")
-
     return [
         (f[(f >= lo_cut) & (f <= hi_cut)], t, Zxx[(f >= lo_cut) & (f <= hi_cut)])
         for lo_cut, hi_cut in lo_hi_cuts
@@ -274,6 +271,10 @@ def _detect_enf(
     """Detects the ENF signal at ENF_OUTPUT_FREQUENCY in the normalized spectrum."""
 
     f, t, Zxx = spectrum
+
+    if len(f) < 2 or len(t) < 1:
+        duration = datetime.timedelta(seconds=t[-1] - t[0])
+        raise ValueError(f"unable to compute spectrum on signal of duration {duration}.")
 
     bin_size = f[1] - f[0]
 
