@@ -45,7 +45,7 @@ STFT_WINDOW_SIZE = datetime.timedelta(seconds=18)
 
 # Post-filters the spectrum with a running normalization filter of the specified window size.
 # Disabled if None.
-NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=25)
+NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=12)
 
 ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
 
@@ -242,23 +242,29 @@ def _spectrum_normalize(spectrum: np.ndarray, signal_frequency: float) -> np.nda
 
     if NORMALIZE_WINDOW_SIZE is None:
         # Normalizes over the whole signal.
-        window_size = len(spectrum)
-    else:
-        window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * signal_frequency)
+        mean = np.mean(spectrum)
+        std = np.std(spectrum)
 
-    spectrum = spectrum.transpose()
+        return np.abs((spectrum - mean) / std)
 
-    for window_begin in range(0, len(spectrum), window_size):
-        window_end = window_begin + window_size
+    window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * signal_frequency)
+
+    spectrum = np.abs(spectrum).transpose()
+
+    normalized = np.empty(spectrum.shape)
+
+    for i in range(0, len(spectrum)):
+        window_begin = max(0, i - window_size // 2)
+        window_end = min(len(spectrum), i + window_size // 2)
 
         window = spectrum[window_begin:window_end]
 
         mean = np.mean(window)
         std = np.std(window)
 
-        spectrum[window_begin:window_end] = (window - mean) / std
+        normalized[i] = (spectrum[i] - mean) / std
 
-    return np.abs(spectrum).transpose()
+    return np.abs(normalized).transpose()
 
 
 def _detect_enf(
