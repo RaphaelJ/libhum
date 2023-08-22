@@ -41,24 +41,24 @@ from libhum.types import Signal, AnalysisResult
 MIN_DECIMATED_FREQUENCY = 1000.0
 
 SPECTRUM_BAND_SIZE = 0.25 # e.g. 49.75 to 50.25 for 50Hz ENF.
-STFT_WINDOW_SIZE = datetime.timedelta(seconds=18)
+STFT_WINDOW_SIZE = datetime.timedelta(seconds=16)
 
 # Post-filters the spectrum with a running normalization filter of the specified window size.
 # Disabled if None.
-NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=12)
+NORMALIZE_WINDOW_SIZE = datetime.timedelta(seconds=24)
 
 ENF_OUTPUT_FREQUENCY = 1.0 # Detects the source ENF at 1Hz
 
 # Post-filters the detected ENF with a Gaussian filter. Disabled if None.
-ENF_GAUSSIAN_SIGMA = 2.5
+ENF_GAUSSIAN_SIGMA = 3.4
 
 # Post-filters the detected ENF by selecting good sections with an high S/N and a minimum duration,
 # and by expanding these to neighboring lower S/N sections if the signal's gradient is within the
 # expected range. Allows short invalid sections of up to ENF_ARTIFACT_MAX_DURATION.
-ENF_HIGH_SNR_THRES = 3.0
-ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=5)
-ENF_LOW_SNR_THRES = 1.5
-ENF_MAX_GRADIENT = 0.004
+ENF_HIGH_SNR_THRES = 2.85
+ENF_HIGH_SNR_MIN_DURATION = datetime.timedelta(seconds=8)
+ENF_LOW_SNR_THRES = 1.6
+ENF_MAX_GRADIENT = 0.0025
 ENF_ARTIFACT_MAX_DURATION = datetime.timedelta(seconds=0)
 
 
