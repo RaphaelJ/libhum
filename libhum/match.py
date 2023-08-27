@@ -21,6 +21,8 @@ import enum
 import math
 import os.path
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, wait
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -144,6 +146,7 @@ def _decimated_masked_array(array: np.ma.masked_array, q: int) -> np.ma.masked_a
     idxs = np.arange(0, len(array), q)
     return array[idxs]
 
+executor = ThreadPoolExecutor(max_workers=2)
 
 def _compute_filtered_corr_coeffs(
     backend_instance: Callable, signal_frequency: float,
@@ -155,12 +158,60 @@ def _compute_filtered_corr_coeffs(
     backend instance.
     """
 
+    CONCURRENT_WORKERS = 3
+
     offsets_chunks = []
     corr_coeffs_chunks = []
     match_lens_chunks = []
 
-    # Processes the offset domain by chunks so that buffers do not exceed MAX_BUFFER_SIZE.
+
+    tasks = deque()
+
     chunk_size = MAX_BUFFER_SIZE // np.int32(0).nbytes
+
+    def process_chunk(chunk_begin):
+        chunk_end = min(len(offsets), chunk_begin + chunk_size)
+
+        chunk_offsets = offsets[chunk_begin:chunk_end]
+
+        # Computes the coefficients using the selected backend
+        corr_coeffs, match_lens = backend_instance(chunk_offsets, a, b)
+        assert len(corr_coeffs) == len(match_lens)
+
+        # Reduces the memory usage by immediatly removing bad coefficients
+        return _filter_coeffs(
+            signal_frequency, chunk_offsets, corr_coeffs, match_lens,
+            min_match_len, min_match_corr_coeff,
+        )
+
+    for chunk_begin in range(0, len(offsets), chunk_size):
+        if len(tasks) > CONCURRENT_WORKERS:
+            chunk_offsets, corr_coeffs, match_lens = tasks.popleft().result()
+
+            offsets_chunks.append(chunk_offsets)
+            corr_coeffs_chunks.append(corr_coeffs)
+            match_lens_chunks.append(match_lens)
+
+        future = executor.submit(process_chunk, chunk_begin)
+
+        tasks.append(future)
+
+    while len(tasks) > 0:
+        chunk_offsets, corr_coeffs, match_lens = tasks.popleft().result()
+
+        offsets_chunks.append(chunk_offsets)
+        corr_coeffs_chunks.append(corr_coeffs)
+        match_lens_chunks.append(match_lens)
+
+    # Combines the chunked corr_coeffs and match_lens
+    offsets = np.concatenate(offsets_chunks)
+    corr_coeffs = np.concatenate(corr_coeffs_chunks)
+    match_lens = np.concatenate(match_lens_chunks)
+
+    return offsets, corr_coeffs, match_lens
+
+
+    # Processes the offset domain by chunks so that buffers do not exceed MAX_BUFFER_SIZE.
     for chunk_begin in range(0, len(offsets), chunk_size):
         chunk_end = min(len(offsets), chunk_begin + chunk_size)
 
