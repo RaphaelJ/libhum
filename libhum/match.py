@@ -29,12 +29,15 @@ from libhum.types import Signal, Match
 
 
 MIN_MATCH_DURATION = datetime.timedelta(minutes=1)
+MIN_MATCH_FRACTION = 0.05 # At least 5% of the samples should be present in the two signals.
 MIN_MATCH_CORR_COEFF = 0.5
+MIN_MATCH_RMSE = 10
 
 # Runs a first a first approximation match at a lower signal frequency.
 APPROX_TARGET_FREQUENCY = 0.1
 APPROX_MIN_MATCH_DURATION = MIN_MATCH_DURATION * 0.75
-APPROX_MIN_MATCH_CORR_COEFF = MIN_MATCH_CORR_COEFF - 0.1
+APPROX_MIN_MATCH_CORR_COEFF = MIN_MATCH_CORR_COEFF + 0.1
+APPROX_MIN_MATCH_RMSE = MIN_MATCH_RMSE - 0.1
 APPROX_SEARCH_WINDOW = datetime.timedelta(seconds=1.0 / APPROX_TARGET_FREQUENCY * 2.0)
 
 # Will ignore matches that have a better match within `MIN_MATCH_LOCAL_MAXIMUM`.
@@ -53,12 +56,34 @@ class MatchBackend(enum.Enum):
     OPENCL = "opencl"
 
 
+class MatchMethod(enum.Enum):
+    CORR_COEFF = "corr_coeff"
+    RMSE = "rmse"
+
+    @property
+    def as_int(self):
+        return {
+            MatchMethod.CORR_COEFF: 1,
+            MatchMethod.RMSE: 2
+        }[self]
+
+    def backend_instance(self):
+        return
+
+    def min_match_result(self, approx: bool = False):
+        return {
+            MatchMethod.CORR_COEFF: APPROX_MIN_MATCH_CORR_COEFF if approx else MIN_MATCH_CORR_COEFF,
+            MatchMethod.RMSE: APPROX_MIN_MATCH_RMSE if approx else MIN_MATCH_RMSE,
+        }[self]
+
+
 def match_signals(
     ref: Signal,
     target: Signal,
     max_matches: Optional[int],
     step: datetime.timedelta = datetime.timedelta(seconds=1),
     backend: MatchBackend = MatchBackend.NUMPY,
+    method: MatchMethod = MatchMethod.RMSE,
 ) -> List[Match]:
     if ref.signal_frequency != target.signal_frequency:
         raise ValueError("signal frequencies should be identical.")
@@ -69,9 +94,9 @@ def match_signals(
     frequency = ref.signal_frequency
 
     backend_instance = {
-        MatchBackend.CUDA: _cuda_compute_corr_coeffs,
-        MatchBackend.NUMPY: _compute_corr_coeffs_numpy,
-        MatchBackend.OPENCL: _opencl_compute_corr_coeffs,
+        MatchBackend.CUDA: _cuda_compute_results,
+        MatchBackend.NUMPY: _numpy_compute_results,
+        MatchBackend.OPENCL: _opencl_compute_results,
     }[backend]
 
     # Approximates the matching algorithm on downsampled signals.
@@ -91,9 +116,9 @@ def match_signals(
 
     approx_offsets = np.arange(offset_begin, offset_end, approx_step_offset, dtype=np.int32)
 
-    approx_offsets, _approx_corr_coeffs, _approx_match_lens = _compute_filtered_corr_coeffs(
-        backend_instance, approx_frequency, approx_offsets, ref_approx, target_approx,
-        min_approx_match_len, APPROX_MIN_MATCH_CORR_COEFF,
+    approx_offsets, _approx_results, _approx_match_lens = _compute_filtered_results(
+        backend_instance, method, approx_offsets, ref_approx, target_approx,
+        min_approx_match_len, method.min_match_result(approx=True),
     )
 
     # Builds the lookup offsets from the approximated matches
@@ -130,13 +155,13 @@ def match_signals(
 
     # Search the approximated windows in the actual signal.
 
-    offsets, corr_coeffs, match_lens = _compute_filtered_corr_coeffs(
-        backend_instance, frequency, offsets, ref.signal, target.signal,
-        min_match_len, MIN_MATCH_CORR_COEFF,
+    offsets, results, match_lens = _compute_filtered_results(
+        backend_instance, method, offsets, ref.signal, target.signal,
+        min_match_len, method.min_match_result(approx=False),
     )
 
     # Sorts the resulting coefficients
-    return _build_matches(frequency, offsets, corr_coeffs, match_lens, max_matches)
+    return _build_matches(frequency, method, offsets, results, match_lens, max_matches)
 
 
 def _decimated_masked_array(array: np.ma.masked_array, q: int) -> np.ma.masked_array:
@@ -145,18 +170,17 @@ def _decimated_masked_array(array: np.ma.masked_array, q: int) -> np.ma.masked_a
     return array[idxs]
 
 
-def _compute_filtered_corr_coeffs(
-    backend_instance: Callable, signal_frequency: float,
+def _compute_filtered_results(
+    backend_instance: Callable, method: MatchMethod,
     offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array,
-    min_match_len: int, min_match_corr_coeff: float,
+    min_match_len: int, min_match_result: float,
 ):
     """
-    Computes the correlation coefficients for all the requested offsets using the requested
-    backend instance.
+    Computes the results for all the requested offsets using the requested backend instance.
     """
 
     offsets_chunks = []
-    corr_coeffs_chunks = []
+    result_chunks = []
     match_lens_chunks = []
 
     # Processes the offset domain by chunks so that buffers do not exceed MAX_BUFFER_SIZE.
@@ -167,43 +191,48 @@ def _compute_filtered_corr_coeffs(
         chunk_offsets = offsets[chunk_begin:chunk_end]
 
         # Computes the coefficients using the selected backend
-        corr_coeffs, match_lens = backend_instance(chunk_offsets, a, b)
-        assert len(corr_coeffs) == len(match_lens)
+        results, match_lens = backend_instance(method, chunk_offsets, a, b)
+        assert len(results) == len(match_lens)
 
         # Reduces the memory usage by immediatly removing bad coefficients
-        chunk_offsets, corr_coeffs, match_lens = _filter_coeffs(
-            signal_frequency, chunk_offsets, corr_coeffs, match_lens,
-            min_match_len, min_match_corr_coeff,
+        chunk_offsets, results, match_lens = _filter_results(
+            chunk_offsets, results, match_lens,
+            min_match_len, min_match_result,
         )
 
         offsets_chunks.append(chunk_offsets)
-        corr_coeffs_chunks.append(corr_coeffs)
+        result_chunks.append(results)
         match_lens_chunks.append(match_lens)
 
 
-    # Combines the chunked corr_coeffs and match_lens
+    # Combines the chunked results and match_lens
     offsets = np.concatenate(offsets_chunks)
-    corr_coeffs = np.concatenate(corr_coeffs_chunks)
+    results = np.concatenate(result_chunks)
     match_lens = np.concatenate(match_lens_chunks)
 
-    return offsets, corr_coeffs, match_lens
+    return offsets, results, match_lens
 
 
-def _compute_corr_coeffs_numpy(
-    offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
+def _numpy_compute_results(
+    method: MatchMethod, offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
-    corr_coeffs = np.empty(len(offsets), dtype=np.float32)
+    results = np.empty(len(offsets), dtype=np.float32)
     match_lens = np.empty(len(offsets), dtype=np.int32)
 
+    if method == MatchMethod.CORR_COEFF:
+        method_function = _numpy_corr_coeff
+    else:
+        method_function = _numpy_rmse
+
     for i, offset in enumerate(offsets):
-        corr_coeffs[i], match_lens[i] = _corr_coeff(
+        results[i], match_lens[i] = method_function(
             a[max(0, offset):offset + len(b)], b[max(0, -offset):len(a) - offset]
         )
 
-    return corr_coeffs, match_lens
+    return results, match_lens
 
 
-def _corr_coeff(a: np.ma.masked_array, b: np.ma.masked_array) -> Tuple[float, int]:
+def _numpy_corr_coeff(a: np.ma.masked_array, b: np.ma.masked_array) -> Tuple[float, int]:
     """
     Computes the Pearson's correlation coefficient of two masked arrays.
 
@@ -233,14 +262,37 @@ def _corr_coeff(a: np.ma.masked_array, b: np.ma.masked_array) -> Tuple[float, in
     return numerator / denominator, match_len
 
 
+def _numpy_rmse(a: np.ma.masked_array, b: np.ma.masked_array) -> Tuple[float, int]:
+    """
+    Computes the Root-Mean-Square error of two masked arrays.
+
+    Ignore the masked samples and returns the total number of non-masked samples in the two signals.
+    """
+
+    assert len(a) == len(b)
+
+    common_mask = a.mask | b.mask
+    match_len = len(a) - np.sum(common_mask)
+
+    if match_len / len(a) < MIN_MATCH_FRACTION:
+        return np.nan, match_len
+
+    masked_a = np.ma.masked_where(common_mask, a)
+    masked_b = np.ma.masked_where(common_mask, b)
+
+    rmse = np.sqrt(np.mean((masked_a - masked_b)**2))
+
+    return rmse, match_len
+
+
 _opencl_ctx = None
 _opencl_queue = None
 _opencl_program = None
 _opencl_buffer_dtype = None
 
 
-def _opencl_compute_corr_coeffs(
-    offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
+def _opencl_compute_results(
+    method: MatchMethod, offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
     import pyopencl as cl
 
@@ -264,7 +316,7 @@ def _opencl_compute_corr_coeffs(
     mask_a_int8 = np.logical_not(a[a_begin:a_end].mask).astype(np.int8)
     mask_b_int8 = np.logical_not(b.mask).astype(np.int8)
 
-    corr_coeffs = np.empty(len(offsets), dtype=np.float32)
+    results = np.empty(len(offsets), dtype=np.float32)
     match_lens = np.empty(len(offsets), dtype=np.int32)
 
     # Prepares OpenCL buffers
@@ -277,25 +329,26 @@ def _opencl_compute_corr_coeffs(
     mask_a_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=mask_a_int8)
     mask_b_gpu = cl.Buffer(_opencl_ctx, mf.READ_ONLY | mf.USE_HOST_PTR, hostbuf=mask_b_int8)
 
-    corr_coeffs_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, corr_coeffs.nbytes)
+    results_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, results.nbytes)
     match_lens_gpu = cl.Buffer(_opencl_ctx, mf.WRITE_ONLY, match_lens.nbytes)
 
     # Runs the OpenCL kernel
 
     n_blocks = math.ceil(len(offsets) / THREADS_PER_BLOCK)
 
-    _opencl_program.corr_coeffs(
+    _opencl_program.match_signals(
         _opencl_queue, (THREADS_PER_BLOCK * n_blocks,), (THREADS_PER_BLOCK,),
+        np.int32(method.as_int),
         offsets_gpu, np.int32(len(offsets_shifted)),
         a_gpu, mask_a_gpu, np.int32(len(a_float)),
         b_gpu, mask_b_gpu, np.int32(len(b_float)),
-        corr_coeffs_gpu, match_lens_gpu,
+        results_gpu, match_lens_gpu,
     )
 
-    cl.enqueue_copy(_opencl_queue, corr_coeffs, corr_coeffs_gpu)
+    cl.enqueue_copy(_opencl_queue, results, results_gpu)
     cl.enqueue_copy(_opencl_queue, match_lens, match_lens_gpu)
 
-    return corr_coeffs, match_lens
+    return results, match_lens
 
 
 def _opencl_initialize():
@@ -333,8 +386,8 @@ _cuda_program = None
 _cuda_buffer_dtype = None
 
 
-def _cuda_compute_corr_coeffs(
-    offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
+def _cuda_compute_results(
+    method: MatchMethod, offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
     import pycuda.driver as cuda
 
@@ -358,7 +411,7 @@ def _cuda_compute_corr_coeffs(
     mask_a_int8 = np.logical_not(a[a_begin:a_end].mask).astype(np.int8)
     mask_b_int8 = np.logical_not(b.mask).astype(np.int8)
 
-    corr_coeffs = np.zeros(len(offsets), dtype=np.float32)
+    results = np.zeros(len(offsets), dtype=np.float32)
     match_lens = np.zeros(len(offsets), dtype=np.int32)
 
     # Runs the kernel
@@ -366,14 +419,15 @@ def _cuda_compute_corr_coeffs(
     n_blocks = math.ceil(len(offsets) / THREADS_PER_BLOCK)
 
     _cuda_program.get_function("corr_coeffs")(
+        np.int32(method.as_int),
         cuda.In(offsets_shifted), np.int32(len(offsets_shifted)),
         cuda.In(a_float), cuda.In(mask_a_int8), np.int32(len(a_float)),
         cuda.In(b_float), cuda.In(mask_b_int8), np.int32(len(b_float)),
-        cuda.Out(corr_coeffs), cuda.InOut(match_lens),
+        cuda.Out(results), cuda.InOut(match_lens),
         grid=(n_blocks, 1, 1), block=(THREADS_PER_BLOCK, 1, 1),
     )
 
-    return corr_coeffs, match_lens
+    return results, match_lens
 
 
 def _cuda_initialize():
@@ -402,33 +456,32 @@ def _cuda_initialize():
         )
 
 
-def _filter_coeffs(
-    frequency: float, offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
-    min_match_len: int, min_match_corr_coeff: float,
+def _filter_results(
+    offsets: np.ndarray, results: np.ndarray, match_lens: np.ndarray,
+    min_match_len: int, min_match_result: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Filters out bad matches based on their coefficients."""
+    """Filters out bad matches based on their values."""
 
-    assert len(offsets) == len(corr_coeffs)
+    assert len(offsets) == len(results)
     assert len(offsets) == len(match_lens)
 
-    valids = (corr_coeffs >= min_match_corr_coeff) & (match_lens >= min_match_len)
+    valids = (results <= min_match_result) & (match_lens >= min_match_len)
     offsets = offsets[valids].copy()
-    corr_coeffs = corr_coeffs[valids].copy()
+    results = results[valids].copy()
     match_lens = match_lens[valids].copy()
 
-    return offsets, corr_coeffs, match_lens
+    return offsets, results, match_lens
 
 
 def _build_matches(
-    frequency: float, offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
-    max_matches: Optional[int],
+    frequency: float, method: MatchMethod, offsets: np.ndarray, results: np.ndarray,
+    match_lens: np.ndarray, max_matches: Optional[int],
 ) -> List[Match]:
     """
-    Post-processes the matches's coefficients by filtering poor matches and by merging adjacent
-    matches.
+    Post-processes the matches's results by filtering poor matches and by merging adjacent matches.
     """
 
-    assert len(offsets) == len(corr_coeffs)
+    assert len(offsets) == len(results)
     assert len(offsets) == len(match_lens)
 
     # Filters out matches that are not local maximas.
@@ -440,12 +493,12 @@ def _build_matches(
     i = 0
     while i < len(offsets):
         offset = offsets[i]
-        corr_coeff = corr_coeffs[i]
+        corr_coeff = results[i]
 
         max_search_offset = offset + search_window_size
         j = i + 1
         while j < len(offsets) and offsets[j] < max_search_offset:
-            if corr_coeffs[j] < corr_coeff:
+            if results[j] < corr_coeff:
                 match_mask[j] = False
                 j += 1
             else:
@@ -454,13 +507,13 @@ def _build_matches(
         i = j
 
     offsets = offsets[match_mask]
-    corr_coeffs = corr_coeffs[match_mask]
+    results = results[match_mask]
     match_lens = match_lens[match_mask]
-    scores = _match_scores(frequency, corr_coeffs, match_lens)
+    scores = _match_scores(frequency, method, results, match_lens)
 
     # Sorts the matches
 
-    matches = sorted(zip(scores, corr_coeffs, match_lens, offsets), reverse=True)
+    matches = sorted(zip(scores, results, match_lens, offsets), reverse=False)
 
     if max_matches is not None:
         matches = matches[:max_matches]
@@ -470,24 +523,29 @@ def _build_matches(
         Match(
             offset=datetime.timedelta(seconds=int(offset / frequency)),
             duration=datetime.timedelta(seconds=int(match_len / frequency)),
-            corr_coeff=corr_coeff,
+            result=result,
             score=score,
         )
-        for score, corr_coeff, match_len, offset
+        for score, result, match_len, offset
         in matches
         if score > 0
     ]
 
 
-def _match_scores(frequency: float, corr_coeff: np.ndarray, match_lens: np.ndarray) -> np.ndarray:
+def _match_scores(
+    frequency: float, method: MatchMethod, result: np.ndarray, match_lens: np.ndarray
+) -> np.ndarray:
     """Estimates a probabilistic score ([0..1]) of a match."""
 
-    # See https://gist.github.com/RaphaelJ/d5bb2a9e597fb60b0117b8eaaa8425f6 for the estimation
-    # of the regression coefficients.
+    if method == MatchMethod.CORR_COEFF:
+        # See https://gist.github.com/RaphaelJ/d5bb2a9e597fb60b0117b8eaaa8425f6 for the estimation
+        # of the regression coefficients.
 
-    sqrt_sec_duration = np.sqrt(match_lens / frequency)
-    score = -0.056555 * sqrt_sec_duration + 0.099599 * corr_coeff * sqrt_sec_duration + -0.307455
-    return np.clip(score, 0, 1)
+        sqrt_sec_duration = np.sqrt(match_lens / frequency)
+        score = -0.056555 * sqrt_sec_duration + 0.099599 * result * sqrt_sec_duration + -0.307455
+        return np.clip(score, 0, 1)
+    else:
+        return result
 
 
 def _read_kernel_source() -> str:

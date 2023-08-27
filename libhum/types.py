@@ -107,11 +107,11 @@ class Match:
     offset: timedelta
 
     # The total duration of the matching signals (i.e. invalid values are ignored during the
-    # computation of the correlation coefficient).
+    # computation of the result coefficient).
     duration: timedelta
 
-    # The Pearson's correlation coefficient for this match.
-    corr_coeff: float
+    # The result coefficient for this match (see `MatchMethod`).
+    result: float
 
     # A probabilistic ([0..1]) score of the match.
     score: float
