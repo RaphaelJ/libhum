@@ -18,8 +18,11 @@
 
 import datetime
 import csv
+import re
+import tempfile
+import zipfile
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -31,9 +34,6 @@ import scipy
 from sortedcontainers import SortedDict
 
 from libhum.types import Signal
-
-
-DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/bin/services/apicache?path=/content/swissgrid/fr/home/operation/grid-data/current-data/jcr:content/parsys/chart_copy"
 
 
 def read_signal(path: str) -> Signal:
@@ -57,7 +57,7 @@ def read_audio(path: str) -> Tuple[np.array, float]:
     return np.mean(data, axis=0), float(frequency)
 
 
-def read_weti(path: str, frequency: float) -> Signal:
+def read_weti(path: str, frequency: float = 1.0) -> Signal:
     """
     Reads a reference ENF signal from a CSV file produced by the Wind Energy Technology Instiute.
 
@@ -99,6 +99,9 @@ def read_weti(path: str, frequency: float) -> Signal:
     )
 
 
+DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/bin/services/apicache?path=/content/swissgrid/fr/home/operation/grid-data/current-data/jcr:content/parsys/chart_copy"
+
+
 def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
     """
     Fetches the latest 10 minute data from the Swiss Grid operator.
@@ -120,6 +123,141 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
         return utc_dt, enf - network_frequency
 
     sparse_signal = SortedDict(parse_swiss_grid_value(*v) for v in values)
+
+    signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
+
+    return Signal(
+        network_frequency=network_frequency,
+        signal=signal,
+        signal_frequency=frequency,
+        begins_at=begins_at
+    )
+
+
+DEFAULT_UK_GRID_INDEX_URL = "https://data.nationalgrideso.com/system/system-frequency-data/datapackage.json"
+
+
+def fetch_uk_grid(
+    month: date, index_url: str = DEFAULT_UK_GRID_INDEX_URL, frequency: float = 1.0
+) -> Signal:
+    """
+    Fetches one month of data from the UK National Grid operator.
+
+    See https://data.nationalgrideso.com/system/system-frequency-data
+    """
+
+    MONTHS = {
+        m: i + 1
+        for i, m in enumerate([
+            "january", "february", "march", "april", "may", "june", "july", "august", "september",
+            "october", "november", "december"
+        ])
+    }
+
+    network_frequency = 50.0
+
+    # Downloads the index
+
+    def parse_resource_name(resource_name: str) -> date:
+
+        match = re.match(r"([a-z]*)_([0-9]{4})_[-–]_historic_frequency_data", resource_name)
+
+        month = MONTHS[match.group(1)]
+        year = int(match.group(2))
+
+        return date(year, month, 1)
+
+    resp = requests.get(index_url)
+    resp.raise_for_status()
+
+    resources_map = {
+        parse_resource_name(r["name"]): r
+        for r in resp.json()["resources"]
+    }
+
+    # Downloads the ENF file.
+
+    resource = resources_map[month.replace(day=1)]
+
+    with tempfile.NamedTemporaryFile("wb") as downloaded_file:
+        with requests.get(resource["path"], stream=True) as resp:
+            resp.raise_for_status()
+
+            for chunk in resp.iter_content(chunk_size=256 * 1024):
+                downloaded_file.write(chunk)
+
+        downloaded_file.flush()
+
+        if resource["mimetype"] == "application/zip":
+            with zipfile.ZipFile(downloaded_file.name) as zip_file:
+                content = zip_file.read(zip_file.filelist[0]).decode("utf-8")
+        else:
+            assert resource["mimetype"] == "text/csv"
+            with open(downloaded_file.name, "r") as text_file:
+                content = text_file.read()
+
+    # Parses the ENF file.
+
+    csv_file = csv.reader(content.splitlines()[1:], delimiter=",")
+
+    def parse_uk_grid_value(dt_str: str, enf_str: str) -> datetime:
+        try:
+            dt = datetime.fromisoformat(dt_str)
+        except ValueError:
+            dt = datetime.strptime(dt_str, "%d/%m/%Y %H:%M:%S").replace(tzinfo=timezone.utc)
+
+        dt = dt.replace(tzinfo=timezone.utc)
+
+        enf = float(enf_str) - network_frequency
+
+        return dt, enf
+
+    sparse_signal = SortedDict(parse_uk_grid_value(*line) for line in csv_file)
+
+    signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
+
+    return Signal(
+        network_frequency=network_frequency,
+        signal=signal,
+        signal_frequency=frequency,
+        begins_at=begins_at
+    )
+
+
+DEFAULT_SWEDISH_GRID_URL = "https://www.svk.se/services/controlroom/v2/freq?fromDateTime={from_dt}&toDateTime={to_dt}"
+
+
+def fetch_swedish_grid(
+    url: str = DEFAULT_SWEDISH_GRID_URL, duration: timedelta = timedelta(hours=1),
+    frequency: float = 1.0
+) -> Signal:
+    """
+    Fetches up to one hour of data from the Swedish national grid operator.
+
+    See https://www.svk.se/en/national-grid/the-control-room/
+    """
+
+    network_frequency = 50.0
+
+    if duration > timedelta(hours=1):
+        raise ValueError("Swedish grid does not allow fetching more than 1h of data.")
+
+    to_dt = datetime.now(tz=timezone.utc)
+    from_dt = to_dt - duration
+
+    endpoint = url.format(from_dt=from_dt.timestamp() * 1000, to_dt=to_dt.timestamp() * 1000)
+    resp = requests.get(endpoint)
+    resp.raise_for_status()
+
+    values = resp.json()["Data"]
+
+    def parse_swedish_grid_value(value: dict):
+        dt = datetime.fromtimestamp(value["x"] / 1000, tz=timezone.utc)
+        enf = value["y"] - network_frequency
+
+        return dt, enf
+
+    sparse_signal = SortedDict(parse_swedish_grid_value(v) for v in values)
 
     signal, begins_at = _resample_sparse_signal(sparse_signal, frequency)
 
