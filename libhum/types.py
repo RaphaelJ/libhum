@@ -20,7 +20,7 @@ import math
 import pickle
 
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import attrs
 import lz4.frame
@@ -169,14 +169,16 @@ class AnalysisResult:
 
     snr: np.ndarray = attrs.field()
 
-    frequency_harmonic: int = attrs.field()
+    frequency_harmonics: List[int] = attrs.field()
 
     def plot(self):
         _, ax = plt.subplots(1, 1, figsize=(18, 4))
 
         f, t, Zxx = self.spectrum
 
-        ax.pcolormesh(t, f / self.frequency_harmonic, Zxx, shading='gouraud')
+        spectrum_harmonic = max(self.frequency_harmonics)
+
+        ax.pcolormesh(t, f / spectrum_harmonic, Zxx, shading='gouraud')
         ax.plot(
             t,
             self.enf.signal.astype(np.float64) + self.enf.network_frequency,
@@ -202,7 +204,7 @@ class AnalysisResult:
                 "Zxx": self.spectrum[2].astype(np.float64).tobytes(),
             },
             "snr": self.snr.astype(np.float32).tobytes(),
-            "frequency_harmonic": self.frequency_harmonic,
+            "frequency_harmonics": self.frequency_harmonics,
         }
 
     @staticmethod
@@ -216,7 +218,7 @@ class AnalysisResult:
             enf=Signal.from_dict(value["enf"]),
             spectrum=(f, t, Zxx),
             snr=np.frombuffer(value["snr"], dtype=np.float32),
-            frequency_harmonic=value["frequency_harmonic"],
+            frequency_harmonics=value["frequency_harmonics"],
         )
 
     def serialize(self) -> bytes:

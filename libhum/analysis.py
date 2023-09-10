@@ -4,7 +4,7 @@
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
 # License as published by the Free Software Foundation; either
-# version 3 of the License, or (at your option) any later version.
+# version 3 of the License, or (at your opt@@<ion) any later version.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -61,6 +61,9 @@ ENF_LOW_SNR_THRES = 1.6
 ENF_MAX_GRADIENT = 0.0025
 ENF_ARTIFACT_MAX_DURATION = datetime.timedelta(seconds=0)
 
+# Ignores ENF harmonics that have less than 5% of valid signal.
+ENF_MIN_QUALITY = 0.05
+
 
 def compute_enf(
     signal: np.array, signal_frequency: float, network_frequency: float = 50.0,
@@ -74,14 +77,16 @@ def compute_enf(
         decimated_signal, decimated_frequency, network_frequency, frequency_harmonics
     )
 
-    # Computes the ENF signal for each harmonic, and keeps the best one.
+    # Computes the ENF signal for each harmonic.
 
-    results = (
+    results = [
         _detect_enf(harmonic_spectrum, network_frequency, frequency_harmonic)
         for frequency_harmonic, harmonic_spectrum in zip(frequency_harmonics, spectrum)
-    )
+    ]
 
-    return max(results, key=lambda result: result.enf.quality())
+    # Merges the ENF signals from the best performing harmonics
+
+    return _merge_enfs(results)
 
 
 def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.ndarray, float]:
@@ -123,11 +128,7 @@ def _signal_spectrum(
         for harmonic in frequency_harmonics
     ]
 
-    # FIXME: bandpass is broken when using multiple harmonics.
-    if len(frequency_harmonics) > 1:
-        filtered_data = signal
-    else:
-        filtered_data = _bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
+    filtered_data = signal#_bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
 
     return [
         (f, t, _spectrum_normalize(Zxx, ENF_OUTPUT_FREQUENCY))
@@ -306,7 +307,7 @@ def _detect_enf(
         enf=enf_signal,
         spectrum=spectrum,
         snr=snrs,
-        frequency_harmonic=frequency_harmonic,
+        frequency_harmonics=[frequency_harmonic],
     )
 
 
@@ -467,4 +468,69 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
         i += 1
 
     return np.ma.array(enf, mask=enf.mask | thres_mask)
+
+def _merge_enfs(results: List[AnalysisResult]) -> AnalysisResult:
+    """Merges multiples signal harmonic ENFs into a single signal."""
+
+    assert all(len(result.frequency_harmonics) == 1 for result in results)
+
+    enfs = [result.enf for result in results]
+
+    assert all(enf.network_frequency == enfs[0].network_frequency for enf in enfs)
+    assert all(enf.signal_frequency == enfs[0].signal_frequency for enf in enfs)
+    assert all(enf.begins_at == enfs[0].begins_at for enf in enfs)
+
+    # Filters out harmonics for which the signal is less than ENF_MIN_QUALITY.
+
+    valid_results = [result for result in results if result.enf.quality() >= ENF_MIN_QUALITY]
+
+    if len(valid_results) < 2:
+        # No enough good harmonics. Returns the best one.
+        return max(results, key=lambda result: result.enf.quality())
+
+    frequency_harmonics = [result.frequency_harmonics[0] for result in valid_results]
+
+    # Takes the median ENF values within all harmonics.
+
+    signals = np.ma.array([result.enf.signal for result in valid_results])
+    snrs = np.array([result.snr for result in valid_results])
+
+    def select_best(index: int):
+        best_result_idx = None
+        best_result_snr = 0
+        for i in range(0, signals.shape[0]):
+            if not signals.mask[i][index] and snrs[i][index] >= best_result_snr:
+                best_result_idx = i
+                best_result_snr = snrs[i][index]
+
+        if best_result_idx is not None:
+            return signals[best_result_idx][index]
+        else:
+            return np.nan
+
+    enf = Signal(
+        network_frequency=valid_results[0].enf.network_frequency,
+        signal_frequency=valid_results[0].enf.signal_frequency,
+        begins_at=valid_results[0].enf.begins_at,
+        signal=np.ma.masked_invalid(
+            [select_best(i) for i in range(0, signals.shape[1])]
+        )
+    )
+
+    # TODO: merges the spectrums instead of selecting the highest frequency one.
+
+    spectrum = max(valid_results, key=lambda result: result.frequency_harmonics[0]).spectrum
+
+    # Takes the median S/N for valid harmonics
+
+    snr = np.max(np.array([result.snr for result in valid_results]), axis=0)
+
+    return AnalysisResult(
+        enf=enf,
+        spectrum=spectrum,
+        snr=snr,
+        frequency_harmonics=frequency_harmonics,
+    )
+
+
 
