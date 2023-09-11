@@ -64,7 +64,7 @@ ENF_ARTIFACT_MAX_DURATION = datetime.timedelta(seconds=0)
 
 def compute_enf(
     signal: np.array, signal_frequency: float, network_frequency: float = 50.0,
-    frequency_harmonics: List[int] = [1, 2],
+    frequency_harmonics: List[int] = [1, 2, 3, 4, 5, 6, 7, 8],
 ) -> AnalysisResult:
     """Detects the ENF signal in the provided audio signal."""
 
