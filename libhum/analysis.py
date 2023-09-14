@@ -123,7 +123,11 @@ def _signal_spectrum(
         for harmonic in frequency_harmonics
     ]
 
-    filtered_data = _bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
+    # FIXME: bandpass is broken when using multiple harmonics.
+    if len(frequency_harmonics) > 1:
+        filtered_data = signal
+    else:
+        filtered_data = _bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
 
     return [
         (f, t, _spectrum_normalize(Zxx, ENF_OUTPUT_FREQUENCY))
