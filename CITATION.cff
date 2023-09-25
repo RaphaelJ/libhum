@@ -1,0 +1,31 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: Libhum
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Raphael
+    family-names: Javaux
+    email: raphael@noisycamp.com
+identifiers:
+  - type: url
+    value: 'https://github.com/RaphaelJ/libhum'
+    description: GitHub code repository
+repository-code: 'https://github.com/RaphaelJ/libhum'
+url: 'https://datethis.app'
+abstract: >-
+  Libhum is a Python library and set of utilities to extract
+  and compare electricity frequency signals (ENF).
+keywords:
+  - ENF
+  - Python
+  - electric-grid
+  - electricity-frequency
+  - dsp
+  - opencl
+  - cuda
+license: LGPL-3.0
