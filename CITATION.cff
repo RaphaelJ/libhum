@@ -11,6 +11,7 @@ authors:
   - given-names: Raphael
     family-names: Javaux
     email: raphael@noisycamp.com
+    orcid: 'https://orcid.org/0009-0002-1099-5542'
 identifiers:
   - type: url
     value: 'https://github.com/RaphaelJ/libhum'
