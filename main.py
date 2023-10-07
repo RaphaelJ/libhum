@@ -17,6 +17,7 @@
 
 
 import argparse
+import sys
 
 from libhum.analysis import compute_enf
 from libhum.io import read_signal, write_signal, read_audio
@@ -69,17 +70,26 @@ def main():
 def _compute_enf_handler(args: argparse.Namespace):
     result = compute_enf(*read_audio(args.audio_file), network_frequency=args.network_frequency)
 
-    print(
-        f"Duration: {result.enf.duration}\t" +
-        f"Frequency harmonic: {result.frequency_harmonics}\t" +
-        f"Quality: {result.enf.quality() * 100:.2f}%\t"
-    )
+    if result is not None:
+        if len(result.extra_frequency_harmonics) > 0:
+            extra_harmonics = ' '.join(str(h) for h in result.extra_frequency_harmonics)
+        else:
+            extra_harmonics = "None"
 
-    if args.output_file:
-        write_signal(args.output_file, result.enf)
+        print(
+            f"Duration: {result.enf.duration}\t" +
+            f"Frequency harmonic: {result.frequency_harmonic}\t" +
+            f"Extra harmonic(s): {extra_harmonics}\t" +
+            f"Quality: {result.enf.quality() * 100:.2f}%\t"
+        )
 
-    if args.plot:
-        result.plot()
+        if args.output_file:
+            write_signal(args.output_file, result.enf)
+
+        if args.plot:
+            result.plot()
+    else:
+        print("No ENF signal detected", file=sys.stderr)
 
 
 def _plot_enf_handler(args: argparse.Namespace):

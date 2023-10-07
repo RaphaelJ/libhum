@@ -4,7 +4,7 @@
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
 # License as published by the Free Software Foundation; either
-# version 3 of the License, or (at your opt@@<ion) any later version.
+# version 3 of the License, or (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,12 +26,13 @@ Provides DSP algorithms to extract ENF signal from sound recordings.
 import datetime
 import enum
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import scipy
 
 from libhum.types import Signal, AnalysisResult
+from libhum.match import _corr_coeff
 
 
 # Parameters obtained on training data using
@@ -61,32 +62,52 @@ ENF_LOW_SNR_THRES = 1.6
 ENF_MAX_GRADIENT = 0.0025
 ENF_ARTIFACT_MAX_DURATION = datetime.timedelta(seconds=0)
 
-# Ignores ENF harmonics that have less than 5% of valid signal.
-ENF_MIN_QUALITY = 0.05
+# Merges harmonics spectrums that have a significant ENF quality, and that match together.
+ENF_HARMONIC_MIN_QUALITY = 0.075
+ENF_HARMONIC_MIN_CORR_COEFF = 0.5
+ENF_HARMONIC_MIN_MATCH_LENGTH = 0.05  # 5%
+
+
+# Spectrums are frequencies, timestamps, values tuples.
+Spectrum = Tuple[np.ndarray, np.ndarray, np.ndarray]
 
 
 def compute_enf(
     signal: np.array, signal_frequency: float, network_frequency: float = 50.0,
     frequency_harmonics: List[int] = [1, 2, 3, 4, 5, 6, 7, 8],
-) -> AnalysisResult:
-    """Detects the ENF signal in the provided audio signal."""
+) -> Optional[AnalysisResult]:
+    """
+    Detects the ENF signal in the provided audio signal.
+
+    Returns None if no ENF signal could be detected.
+    """
 
     decimated_signal, decimated_frequency = _signal_decimate(signal, signal_frequency)
 
-    spectrum = _signal_spectrum(
+    spectrums = _signal_spectrums(
         decimated_signal, decimated_frequency, network_frequency, frequency_harmonics
     )
 
-    # Computes the ENF signal for each harmonic.
+    # Computes the ENF signal for every harmonic
 
     results = [
         _detect_enf(harmonic_spectrum, network_frequency, frequency_harmonic)
-        for frequency_harmonic, harmonic_spectrum in zip(frequency_harmonics, spectrum)
+        for frequency_harmonic, harmonic_spectrum in zip(frequency_harmonics, spectrums)
     ]
 
-    # Merges the ENF signals from the best performing harmonics
+    # Keeps the ENF harmonics that score higher than ENF_MIN_HARMONIC_QUALITY
 
-    return _merge_enfs(results)
+    valid_results = [
+        (result, spectrum)
+        for result, spectrum in zip(results, spectrums)
+        if result.enf.quality() >= ENF_HARMONIC_MIN_QUALITY
+    ]
+
+    if len(valid_results) == 0:
+        return None
+    else:
+        # Re-runs the ENF detection by combining the harmonics containing an ENF signal.
+        return _combined_harmonics_result(network_frequency, valid_results)
 
 
 def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.ndarray, float]:
@@ -110,12 +131,12 @@ def _signal_decimate(signal: np.ndarray, signal_frequency: float) -> Tuple[np.nd
     return scipy.signal.decimate(signal, decimation_q, ftype="fir", n=16), downsampled_frequency
 
 
-def _signal_spectrum(
+def _signal_spectrums(
     signal: np.ndarray, signal_frequency: float, network_frequency: float,
     frequency_harmonics: List[int],
-) -> List[Tuple[np.array, np.array, np.array]]:
+) -> List[Spectrum]:
     """
-    Computes the normalized STFT spectrum for the given network frequency's harmonics.
+    Computes the normalized STFT spectrums for the given network frequency's harmonics.
 
     Returns the frequencies, timestamp, and spectrum for every requested harmonic's frequency band.
     """
@@ -128,12 +149,9 @@ def _signal_spectrum(
         for harmonic in frequency_harmonics
     ]
 
-    filtered_data = signal#_bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
+    filtered_data = _bandpass_filter(signal, signal_frequency, lo_hi_cuts, order=10)
 
-    return [
-        (f, t, _spectrum_normalize(Zxx, ENF_OUTPUT_FREQUENCY))
-        for f, t, Zxx in _stft(filtered_data, signal_frequency, lo_hi_cuts)
-    ]
+    return _stft(filtered_data, signal_frequency, lo_hi_cuts)
 
 
 def _bandpass_filter(
@@ -158,14 +176,14 @@ def _bandpass_filter(
         if filtered_data is None:
             filtered_data = harmonic_filtered_data
         else:
-            filtered_data = np.maximum(filtered_data, harmonic_filtered_data)
+            filtered_data += harmonic_filtered_data
 
     return filtered_data
 
 
 def _stft(
     signal: np.ndarray, frequency: float, lo_hi_cuts: List[Tuple[int, int]],
-) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+) -> List[Spectrum]:
     """
     Performs a Short-time Fourier Transform (STFT) on the input signal for the given bands
 
@@ -214,7 +232,8 @@ def _stft(
             assert signal_begin >= window_size_seconds
             output_begin = int(window_half_size / frequency * ENF_OUTPUT_FREQUENCY)
 
-        f, t, Zxx = scipy.signal.stft(chunk, frequency, nperseg=n_perseg, noverlap=n_overlap)
+        f, t, Zxx = scipy.signal.stft(chunk, frequency, nperseg=n_perseg, noverlap=n_overlap, scaling="psd")
+        Zxx = abs(Zxx)**2
 
         band_f_idxs = None
 
@@ -239,43 +258,46 @@ def _stft(
     ]
 
 
-def _spectrum_normalize(spectrum: np.ndarray, signal_frequency: float) -> np.ndarray:
+def _spectrum_normalize(spectrum: Spectrum, signal_frequency: float) -> Spectrum:
     """Normalizes to the mean and stddev over NORMALIZE_WINDOW_SIZE."""
+
+    f, t, Zxx = spectrum
 
     if NORMALIZE_WINDOW_SIZE is None:
         # Normalizes over the whole signal.
-        mean = np.mean(spectrum)
-        std = np.std(spectrum)
+        mean = np.mean(Zxx)
+        std = np.std(Zxx)
 
-        return np.abs((spectrum - mean) / std)
+        return np.abs((Zxx - mean) / std)
 
     window_size = round(NORMALIZE_WINDOW_SIZE.total_seconds() * signal_frequency)
 
-    spectrum = np.abs(spectrum).transpose()
+    Zxx = np.abs(Zxx).transpose()
 
-    normalized = np.empty(spectrum.shape)
+    normalized = np.empty(Zxx.shape)
 
-    for i in range(0, len(spectrum)):
+    for i in range(0, len(Zxx)):
         window_begin = max(0, i - window_size // 2)
-        window_end = min(len(spectrum), i + window_size // 2)
+        window_end = min(len(Zxx), i + window_size // 2)
 
-        window = spectrum[window_begin:window_end]
+        window = Zxx[window_begin:window_end]
 
         mean = np.mean(window)
         std = np.std(window)
 
-        normalized[i] = (spectrum[i] - mean) / std
+        normalized[i] = (Zxx[i] - mean) / std
 
-    return np.abs(normalized).transpose()
+    return f, t, np.abs(normalized).transpose()
 
 
 def _detect_enf(
-    spectrum: Tuple[np.ndarray, np.ndarray, np.ndarray], network_frequency: float,
-    frequency_harmonic: int,
+    spectrum: Spectrum, network_frequency: float, frequency_harmonic: int,
+    extra_frequency_harmonics: List[int] = [],
 ) -> AnalysisResult:
     """Detects the ENF signal at ENF_OUTPUT_FREQUENCY in the normalized spectrum."""
 
-    f, t, Zxx = spectrum
+    normalized_spectrum = _spectrum_normalize(spectrum, ENF_OUTPUT_FREQUENCY)
+    f, t, Zxx = normalized_spectrum
 
     if len(f) < 2 or len(t) < 1:
         duration = datetime.timedelta(seconds=t[-1] - t[0])
@@ -305,9 +327,10 @@ def _detect_enf(
 
     return AnalysisResult(
         enf=enf_signal,
-        spectrum=spectrum,
+        spectrum=normalized_spectrum,
         snr=snrs,
-        frequency_harmonics=[frequency_harmonic],
+        frequency_harmonic=frequency_harmonic,
+        extra_frequency_harmonics=extra_frequency_harmonics,
     )
 
 
@@ -320,7 +343,12 @@ def _quadratic_interpolation(spectrum, max_amp_idx, bin_size):
     left = spectrum[max_amp_idx - 1] if max_amp_idx > 0 else center
     right = spectrum[max_amp_idx + 1] if max_amp_idx + 1 < len(spectrum) else center
 
-    p = 0.5 * (left - right) / (left - 2 * center + right)
+    denominator = left - 2 * center + right
+
+    if denominator == 0.0:
+        return center
+
+    p = 0.5 * (left - right) / denominator
     interpolated = (max_amp_idx + p) * bin_size
 
     return interpolated
@@ -469,68 +497,84 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
 
     return np.ma.array(enf, mask=enf.mask | thres_mask)
 
-def _merge_enfs(results: List[AnalysisResult]) -> AnalysisResult:
-    """Merges multiples signal harmonic ENFs into a single signal."""
 
-    assert all(len(result.frequency_harmonics) == 1 for result in results)
+def _combined_harmonics_result(
+    network_frequency: float,
+    results: List[Tuple[AnalysisResult, Spectrum]]
+) -> AnalysisResult:
+    """
+    Re-runs the ENF detection on the combined spectrum of the provided ENF analysis results.
+    """
 
-    enfs = [result.enf for result in results]
+    if len(results) < 1:
+        raise ValueError("at least one harmonic analysis result is required.")
 
-    assert all(enf.network_frequency == enfs[0].network_frequency for enf in enfs)
-    assert all(enf.signal_frequency == enfs[0].signal_frequency for enf in enfs)
-    assert all(enf.begins_at == enfs[0].begins_at for enf in enfs)
+    # Takes the lowest valid harmonic as a reference. Higher harmonics might be of higher quality,
+    # but have a lower chance of being associated with the actual ENF signal.
 
-    # Filters out harmonics for which the signal is less than ENF_MIN_QUALITY.
+    sorted_results = sorted(results, key=lambda result: result[0].frequency_harmonic)
 
-    valid_results = [result for result in results if result.enf.quality() >= ENF_MIN_QUALITY]
+    output_result, output_spectrum = sorted_results[0]
+    output_extra_harmonics = []
 
-    if len(valid_results) < 2:
-        # No enough good harmonics. Returns the best one.
-        return max(results, key=lambda result: result.enf.quality())
+    # Keeps adding valid harmonic's spectrums for the reference ENF if it improves its quality.
 
-    frequency_harmonics = [result.frequency_harmonics[0] for result in valid_results]
+    for result, spectrum in sorted_results[1:]:
+        corr_coeff, length = _corr_coeff(output_result.enf.signal, result.enf.signal)
 
-    # Takes the median ENF values within all harmonics.
+        match_length = length / len(output_result.enf.signal)
 
-    signals = np.ma.array([result.enf.signal for result in valid_results])
-    snrs = np.array([result.snr for result in valid_results])
+        if corr_coeff < ENF_HARMONIC_MIN_CORR_COEFF or match_length < ENF_HARMONIC_MIN_MATCH_LENGTH:
+            # This is not the same signal, ignore.
+            continue
 
-    def select_best(index: int):
-        best_result_idx = None
-        best_result_snr = 0
-        for i in range(0, signals.shape[0]):
-            if not signals.mask[i][index] and snrs[i][index] >= best_result_snr:
-                best_result_idx = i
-                best_result_snr = snrs[i][index]
-
-        if best_result_idx is not None:
-            return signals[best_result_idx][index]
-        else:
-            return np.nan
-
-    enf = Signal(
-        network_frequency=valid_results[0].enf.network_frequency,
-        signal_frequency=valid_results[0].enf.signal_frequency,
-        begins_at=valid_results[0].enf.begins_at,
-        signal=np.ma.masked_invalid(
-            [select_best(i) for i in range(0, signals.shape[1])]
+        combined_spectrum = _combine_spectrums(
+            spectrum, result.frequency_harmonic,
+            output_spectrum, output_result.frequency_harmonic,
         )
-    )
+        combined_extra_harmonics = output_extra_harmonics + [result.frequency_harmonic]
 
-    # TODO: merges the spectrums instead of selecting the highest frequency one.
+        combined_result = _detect_enf(
+            combined_spectrum, network_frequency, output_result.frequency_harmonic,
+            combined_extra_harmonics,
+        )
 
-    spectrum = max(valid_results, key=lambda result: result.frequency_harmonics[0]).spectrum
+        if combined_result.enf.quality() > output_result.enf.quality():
+            output_result = combined_result
+            combined_extra_harmonics = combined_extra_harmonics
 
-    # Takes the median S/N for valid harmonics
-
-    snr = np.max(np.array([result.snr for result in valid_results]), axis=0)
-
-    return AnalysisResult(
-        enf=enf,
-        spectrum=spectrum,
-        snr=snr,
-        frequency_harmonics=frequency_harmonics,
-    )
+    return output_result
 
 
+def _combine_spectrums(
+    source: Spectrum, source_harmonic: int,
+    target: Spectrum, target_harmonic: int,
+) -> Spectrum:
+    """
+    Adds the source spectrum to the target spectrum, with their associated weights.
 
+    Returns a spectrum object that match the target object's shape.
+    """
+
+    source_f, source_t, source_Zxx = source
+    target_f, target_t, target_Zxx = target
+
+    assert len(source_f) > 0
+    assert len(target_f) > 0
+
+    assert len(source_t) > 0
+    assert len(target_t) > 0
+
+    assert np.all(source_t == target_t)
+
+    source_f = source_f / source_harmonic
+    target_f = target_f / target_harmonic
+
+    # Interpolates the values from source's frequencies into target.
+
+    combined_Zxx = target_Zxx.transpose()
+
+    for t, _ in enumerate(source_t):
+        combined_Zxx[t] = combined_Zxx[t] + np.interp(target_f, source_f, source_Zxx[:,t])
+
+    return target[0], target_t, combined_Zxx.transpose()

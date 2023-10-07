@@ -169,14 +169,19 @@ class AnalysisResult:
 
     snr: np.ndarray = attrs.field()
 
-    frequency_harmonics: List[int] = attrs.field()
+    # The main frequency harmonic. The spectrum is based on this harmonic.
+    frequency_harmonic: int = attrs.field()
+
+    # Extras harmonics that have been combined into the main harmonic's spectrum to improve
+    # detection.
+    extra_frequency_harmonics: List[int] = attrs.field(default=[])
 
     def plot(self):
         _, ax = plt.subplots(1, 1, figsize=(18, 4))
 
         f, t, Zxx = self.spectrum
 
-        spectrum_harmonic = max(self.frequency_harmonics)
+        spectrum_harmonic = self.frequency_harmonic
 
         ax.pcolormesh(t, f / spectrum_harmonic, Zxx, shading='gouraud')
         ax.plot(
@@ -204,7 +209,8 @@ class AnalysisResult:
                 "Zxx": self.spectrum[2].astype(np.float64).tobytes(),
             },
             "snr": self.snr.astype(np.float32).tobytes(),
-            "frequency_harmonics": self.frequency_harmonics,
+            "frequency_harmonic": self.frequency_harmonic,
+            "extra_frequency_harmonics": self.extra_frequency_harmonics,
         }
 
     @staticmethod
@@ -218,7 +224,8 @@ class AnalysisResult:
             enf=Signal.from_dict(value["enf"]),
             spectrum=(f, t, Zxx),
             snr=np.frombuffer(value["snr"], dtype=np.float32),
-            frequency_harmonics=value["frequency_harmonics"],
+            frequency_harmonic=value["frequency_harmonic"],
+            extra_frequency_harmonics=value.get("extra_frequency_harmonics", []),
         )
 
     def serialize(self) -> bytes:
