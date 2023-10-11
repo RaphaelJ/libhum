@@ -181,9 +181,7 @@ class AnalysisResult:
 
         f, t, Zxx = self.spectrum
 
-        spectrum_harmonic = self.frequency_harmonic
-
-        ax.pcolormesh(t, f / spectrum_harmonic, Zxx, shading='gouraud')
+        ax.pcolormesh(t, f / self.frequency_harmonic, Zxx, shading='gouraud')
         ax.plot(
             t,
             self.enf.signal.astype(np.float64) + self.enf.network_frequency,

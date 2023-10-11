@@ -362,6 +362,7 @@ def _post_process_enf(enf: np.ndarray, snrs: np.ndarray) -> np.ma.masked_array:
         (smoothed < -SPECTRUM_BAND_SIZE) | (smoothed > SPECTRUM_BAND_SIZE),
         smoothed
     )
+    clipped.fill_value = np.nan
 
     thresholded = _threshold_enf(clipped, snrs)
 
@@ -495,7 +496,7 @@ def _threshold_enf(enf: np.ma.masked_array, snrs: np.ndarray) -> np.ma.masked_ar
 
         i += 1
 
-    return np.ma.array(enf, mask=enf.mask | thres_mask)
+    return np.ma.array(enf, mask=enf.mask | thres_mask, fill_value=np.nan)
 
 
 def _combined_harmonics_result(
