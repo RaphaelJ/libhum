@@ -99,7 +99,7 @@ def read_weti(path: str, frequency: float = 1.0) -> Signal:
     )
 
 
-DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/bin/services/apicache?path=/content/swissgrid/fr/home/operation/grid-data/current-data/jcr:content/parsys/chart_copy"
+DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/content/swissgrid/en/home/operation/regulation/frequency.apicache.html?path=/content/swissgrid/en/home/operation/regulation/frequency/jcr:content/parsys/chart_copy"
 
 
 def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
