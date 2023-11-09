@@ -285,7 +285,10 @@ def _spectrum_normalize(spectrum: Spectrum, signal_frequency: float) -> Spectrum
         mean = np.mean(window)
         std = np.std(window)
 
-        normalized[i] = (Zxx[i] - mean) / std
+        if std == 0.0:
+            normalized[i] = 0.0
+        else:
+            normalized[i] = (Zxx[i] - mean) / std
 
     return f, t, np.abs(normalized).transpose()
 
@@ -315,7 +318,12 @@ def _detect_enf(
         max_amp_freq = f[0] + _quadratic_interpolation(sub_spectrum, max_amp_idx, bin_size)
 
         enf[i] = max_amp_freq / frequency_harmonic - network_frequency
-        snrs[i] = max_amp / np.mean(sub_spectrum)
+
+        sub_spectrum_mean = np.mean(sub_spectrum)
+        if sub_spectrum_mean == 0.0:
+            snrs[i] = 0
+        else:
+            snrs[i] = max_amp / sub_spectrum_mean
 
     enf = _post_process_enf(enf, snrs)
 

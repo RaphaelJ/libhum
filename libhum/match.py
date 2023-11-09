@@ -29,7 +29,7 @@ from libhum.types import Signal, Match
 
 
 MIN_MATCH_DURATION = datetime.timedelta(minutes=1)
-MIN_MATCH_CORR_COEFF = 0.6
+MIN_MATCH_CORR_COEFF = 0.65
 
 # Runs a first a first approximation match at a lower signal frequency.
 APPROX_TARGET_FREQUENCY = 0.1
@@ -56,7 +56,7 @@ class MatchBackend(enum.Enum):
 def match_signals(
     ref: Signal,
     target: Signal,
-    max_matches: Optional[int],
+    max_matches: Optional[int] = None,
     step: datetime.timedelta = datetime.timedelta(seconds=1),
     backend: MatchBackend = MatchBackend.NUMPY,
 ) -> List[Match]:
