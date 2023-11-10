@@ -149,7 +149,7 @@ def _compute_filtered_corr_coeffs(
     backend_instance: Callable, signal_frequency: float,
     offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array,
     min_match_len: int, min_match_corr_coeff: float,
-):
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes the correlation coefficients for all the requested offsets using the requested
     backend instance.
@@ -180,11 +180,16 @@ def _compute_filtered_corr_coeffs(
         corr_coeffs_chunks.append(corr_coeffs)
         match_lens_chunks.append(match_lens)
 
-
     # Combines the chunked corr_coeffs and match_lens
-    offsets = np.concatenate(offsets_chunks)
-    corr_coeffs = np.concatenate(corr_coeffs_chunks)
-    match_lens = np.concatenate(match_lens_chunks)
+    if len(offsets_chunks) > 0:
+        offsets = np.concatenate(offsets_chunks)
+        corr_coeffs = np.concatenate(corr_coeffs_chunks)
+        match_lens = np.concatenate(match_lens_chunks)
+    else:
+        # Zero matches
+        offsets = np.empty((0,))
+        corr_coeffs = np.empty((0,))
+        match_lens = np.empty((0,))
 
     return offsets, corr_coeffs, match_lens
 
