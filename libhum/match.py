@@ -21,9 +21,13 @@ import enum
 import math
 import os.path
 
+from functools import cache
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
+import pickle
+
+from sklearn.base import RegressorMixin
 
 from libhum.types import Signal, Match
 
@@ -44,7 +48,10 @@ MAX_BUFFER_SIZE = 64 * 1024 * 1024 # 64 MB
 
 THREADS_PER_BLOCK = 256 # CUDA threads per bloc or OpenCL workers per group
 
-KERNEL_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "match.kernel")
+_current_dir = os.path.dirname(os.path.realpath(__file__))
+
+KERNEL_PATH = os.path.join(_current_dir, "match.kernel")
+SCORE_REGRESSOR_PATH = os.path.join(_current_dir, "match_score_regressor.pickle")
 
 
 class MatchBackend(enum.Enum):
@@ -136,7 +143,9 @@ def match_signals(
     )
 
     # Sorts the resulting coefficients
-    return _build_matches(frequency, offsets, corr_coeffs, match_lens, max_matches)
+    return _build_matches(
+        frequency, ref.signal, target.signal, offsets, corr_coeffs, match_lens, max_matches
+    )
 
 
 def _decimated_masked_array(array: np.ma.masked_array, q: int) -> np.ma.masked_array:
@@ -197,6 +206,10 @@ def _compute_filtered_corr_coeffs(
 def _compute_corr_coeffs_numpy(
     offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Computes the Pearson's correlation coefficients for the requested offsets.
+    """
+
     corr_coeffs = np.empty(len(offsets), dtype=np.float32)
     match_lens = np.empty(len(offsets), dtype=np.int32)
 
@@ -236,6 +249,35 @@ def _corr_coeff(a: np.ma.masked_array, b: np.ma.masked_array) -> Tuple[float, in
         return np.nan, match_len
 
     return numerator / denominator, match_len
+
+
+def _compute_rmses(
+    offsets: np.ndarray, a: np.ma.masked_array, b: np.ma.masked_array
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute the Root Mean Square Errors for the requested offsets
+    """
+
+    rmses = np.empty(len(offsets), dtype=np.float32)
+
+    for i, offset in enumerate(offsets):
+        rmses[i] = _rmse(a[max(0, offset):offset + len(b)], b[max(0, -offset):len(a) - offset])
+
+    return rmses
+
+
+def _rmse(a: np.ma.masked_array, b: np.ma.masked_array) -> float:
+    """
+    Computes the Root Mean Square Error of two masked arrays.
+
+    Ignore the masked samples.
+    """
+
+    assert len(a) == len(b)
+
+    diff = (a - b).astype(np.float64)
+
+    return np.sqrt(np.mean(diff**2))
 
 
 _opencl_ctx = None
@@ -425,12 +467,16 @@ def _filter_coeffs(
 
 
 def _build_matches(
-    frequency: float, offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
+    frequency: float,
+    a: np.ma.masked_array, b: np.ma.masked_array,
+    offsets: np.ndarray, corr_coeffs: np.ndarray, match_lens: np.ndarray,
     max_matches: Optional[int],
 ) -> List[Match]:
     """
     Post-processes the matches's coefficients by filtering poor matches and by merging adjacent
     matches.
+
+    Computes additional features and builds `Match` objects.
     """
 
     assert len(offsets) == len(corr_coeffs)
@@ -461,11 +507,18 @@ def _build_matches(
     offsets = offsets[match_mask]
     corr_coeffs = corr_coeffs[match_mask]
     match_lens = match_lens[match_mask]
-    scores = _match_scores(frequency, corr_coeffs, match_lens)
+
+    rmses = _compute_rmses(offsets, a, b)
+
+    scores = _match_scores(frequency, match_lens, corr_coeffs, rmses)
 
     # Sorts the matches
 
-    matches = sorted(zip(scores, corr_coeffs, match_lens, offsets), reverse=True)
+    matches = sorted(
+        zip(offsets, match_lens, corr_coeffs, rmses, scores),
+        key=lambda match: match[4],
+        reverse=True,
+    )
 
     if max_matches is not None:
         matches = matches[:max_matches]
@@ -476,25 +529,39 @@ def _build_matches(
             offset=datetime.timedelta(seconds=int(offset / frequency)),
             duration=datetime.timedelta(seconds=int(match_len / frequency)),
             corr_coeff=corr_coeff,
+            rmse=rmse,
             score=score,
         )
-        for score, corr_coeff, match_len, offset
+        for offset, match_len, corr_coeff, rmse, score
         in matches
         if score > 0
     ]
 
 
-def _match_scores(frequency: float, corr_coeff: np.ndarray, match_lens: np.ndarray) -> np.ndarray:
+def _match_scores(
+    frequency: float, match_lens: np.ndarray, corr_coeffs: np.ndarray, rmses: np.ndarray
+) -> np.ndarray:
     """Estimates a probabilistic score ([0..1]) of a match."""
 
-    # See https://gist.github.com/RaphaelJ/d5bb2a9e597fb60b0117b8eaaa8425f6 for the estimation
-    # of the regression coefficients.
+    # See https://gist.github.com/RaphaelJ/850480b75ec1dad0beca6f95b381fb90 for the estimation of
+    # the Scikit-Learn regressor.
 
-    sqrt_sec_duration = np.sqrt(match_lens / frequency)
-    score = -0.056555 * sqrt_sec_duration + 0.099599 * corr_coeff * sqrt_sec_duration + -0.307455
-    return np.clip(score, 0, 1)
+    regr = _read_score_regressor()
+
+    X = np.array([match_lens / frequency, corr_coeffs, rmses]).transpose()
+
+    if X.shape[0] > 0:
+        return np.clip(regr.predict(X), 0, 1)
+    else:
+        return np.array([])
 
 
 def _read_kernel_source() -> str:
     with open(KERNEL_PATH) as f:
         return f.read()
+
+
+@cache
+def _read_score_regressor() -> RegressorMixin:
+    with open(SCORE_REGRESSOR_PATH, "rb") as f:
+        return pickle.load(f)

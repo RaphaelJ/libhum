@@ -113,6 +113,9 @@ class Match:
     # The Pearson's correlation coefficient for this match.
     corr_coeff: float
 
+    # Root Mean Square Error for this match.
+    rmse: float
+
     # A probabilistic ([0..1]) score of the match.
     score: float
 
