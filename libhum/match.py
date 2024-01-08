@@ -538,6 +538,14 @@ def _build_matches(
     ]
 
 
+def _match_score_linear_func(X: np.ndarray) -> np.ndarray:
+    """Linear function used by the serialized linear regression estimator in `_match_scores()`."""
+
+    X = np.array(X)
+    sqrt_length = np.sqrt(X[:, 1])
+    return np.c_[sqrt_length * X[:, 0], sqrt_length, sqrt_length * X[:, 2]]
+
+
 def _match_scores(
     frequency: float, match_lens: np.ndarray, corr_coeffs: np.ndarray, rmses: np.ndarray
 ) -> np.ndarray:
