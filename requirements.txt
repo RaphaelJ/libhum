@@ -4,5 +4,6 @@ lz4
 matplotlib
 numpy
 requests
-sortedcontainers
+scikit-learn
 scipy
+sortedcontainers
