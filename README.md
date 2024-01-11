@@ -49,7 +49,7 @@ Some of the signal processing algorithms used by the library originate from Robe
 
 # License
 
-See [LICENSE] file for details.
+See [LICENSE](LICENSE) file for details.
 
 # BibTeX Citation
 
