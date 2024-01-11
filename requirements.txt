@@ -1,9 +1,0 @@
-attrs
-audiofile
-lz4
-matplotlib
-numpy
-requests
-scikit-learn
-scipy
-sortedcontainers

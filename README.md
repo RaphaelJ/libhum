@@ -13,12 +13,8 @@ about 20 seconds.
 
 # Setup
 
-Create a Python virtual environment and install the required dependencies using PIP:
-
 ```
-python -m venv venv
-. ./venv/bin/activate
-pip install -r requirements.txt
+pip install libhum
 ```
 
 # Compute ENF
@@ -26,10 +22,10 @@ pip install -r requirements.txt
 Use the `compute_enf` command to extract the main ENF from an audio or video file to an `.enf` file:
 
 ```
-python main.py compute_enf samples/target.ogg target.enf --plot
+libhum compute_enf samples/target.ogg target.enf --plot
 ```
 
-By the default, the library is looking for an ENF signal in the 50 Hz band. Use the `-f/--frequency`
+By default, the library is looking for an ENF signal in the 50 Hz band. Use the `-f/--frequency`
 option to use a different frequency.
 
 # Match ENFs
@@ -39,7 +35,7 @@ option to use a different frequency.
 Use the `match_enf` command to find the best matches between two signals:
 
 ```
-python main.py match_enf samples/reference.enf samples/target.enf --plot
+libhum match_enf samples/reference.enf samples/target.enf --plot
 ```
 
 The default backend is using Numpy and is considerably slower than the OpenCL or CUDA backends which
@@ -50,3 +46,21 @@ GPU-accelerated backend.
 
 Some of the signal processing algorithms used by the library originate from Robert Heaton's
 [ENF matching library](https://github.com/robert/enf-matching).
+
+# License
+
+See [LICENSE] file for details.
+
+# BibTeX Citation
+
+If you use Libhum in any scientific publication, please use the following BibTex citation:
+
+```
+@software{Javaux_Libhum,
+    author = {Javaux, Raphael},
+    license = {LGPL-3.0},
+    title = {{Libhum}},
+    url = {https://github.com/RaphaelJ/libhum},
+    year={2024},
+}
+```
