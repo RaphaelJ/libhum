@@ -172,7 +172,7 @@ def fetch_uk_grid(
 
     resources_map = {
         parse_resource_name(r["name"]): r
-        for r in resp.json()["resources"]
+        for r in resp.json()["result"]["resources"]
     }
 
     # Downloads the ENF file.
@@ -188,11 +188,11 @@ def fetch_uk_grid(
 
         downloaded_file.flush()
 
-        if resource["mimetype"] == "application/zip":
+        if resource["mediatype"] == "application/zip":
             with zipfile.ZipFile(downloaded_file.name) as zip_file:
                 content = zip_file.read(zip_file.filelist[0]).decode("utf-8")
         else:
-            assert resource["mimetype"] == "text/csv"
+            assert resource["mediatype"] == "text/csv"
             with open(downloaded_file.name, "r") as text_file:
                 content = text_file.read()
 
