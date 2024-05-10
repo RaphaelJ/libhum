@@ -112,7 +112,13 @@ def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
     swiss_tz = ZoneInfo("Europe/Zurich")
     network_frequency = 50.0
 
-    resp = requests.get(url)
+    # Makes the request as Firefox
+    headers = {
+        "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0"
+    }
+
+    resp = requests.get(url, headers=headers)
     resp.raise_for_status()
 
     values = resp.json()["data"]["series"][0]["data"]
