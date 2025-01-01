@@ -59,7 +59,7 @@ def read_audio(path: str) -> Tuple[np.array, float]:
 
 def read_weti(path: str, frequency: float = 1.0) -> Signal:
     """
-    Reads a reference ENF signal from a CSV file produced by the Wind Energy Technology Instiute.
+    Reads a reference ENF signal from a CSV file produced by the Wind Energy Technology Institute.
 
     See https://osf.io/jbk82/.
     """
@@ -99,7 +99,7 @@ def read_weti(path: str, frequency: float = 1.0) -> Signal:
     )
 
 
-DEFAULT_SWISS_GRID_URL = "https://www.swissgrid.ch/content/swissgrid/en/home/operation/regulation/frequency.apicache.json?path=/content/swissgrid/en/home/operation/regulation/frequency/jcr:content/parsys/chart_copy"
+DEFAULT_SWISS_GRID_URL = "https://data.swissgrid.ch/charts/frequency/?lang=en"
 
 
 def fetch_swiss_grid(url: str = DEFAULT_SWISS_GRID_URL, frequency: float = 0.1):
@@ -194,11 +194,13 @@ def fetch_uk_grid(
 
         downloaded_file.flush()
 
-        if resource["mediatype"] == "application/zip":
+        mediatype = resource.get("mediatype") or resource.get("format")
+
+        if mediatype == "application/zip":
             with zipfile.ZipFile(downloaded_file.name) as zip_file:
                 content = zip_file.read(zip_file.filelist[0]).decode("utf-8")
         else:
-            assert resource["mediatype"] == "text/csv"
+            assert mediatype in ["text/csv", "CSV"]
             with open(downloaded_file.name, "r") as text_file:
                 content = text_file.read()
 
